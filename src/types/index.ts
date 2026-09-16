@@ -1,0 +1,138 @@
+export type ProjectType =
+  | 'java-maven'
+  | 'java-gradle'
+  | 'python'
+  | 'flutter'
+  | 'vue'
+  | 'react'
+  | 'node'
+  | 'unknown'
+
+export type RuntimeKind = 'jdk' | 'node' | 'python' | 'flutter'
+
+export type TaskType = 'run' | 'build' | 'deploy'
+export type TaskStatus = 'running' | 'success' | 'failed' | 'stopped'
+
+export type GitPlatform = 'github' | 'gitee' | 'gitlab' | 'other'
+export type ProgressStage = 'planning' | 'developing' | 'testing' | 'released'
+
+export interface Workspace {
+  id: string
+  name: string
+  kind: 'personal' | 'company'
+  icon: string | null
+  color: string | null
+  sort_order: number
+  created_at: string
+}
+
+export interface ProjectRemote {
+  id: string
+  project_id: string
+  name: string
+  url: string
+  platform: GitPlatform
+  is_default: number
+}
+
+export interface GitSummary {
+  isGit: boolean
+  branch: string | null
+  ahead: number
+  behind: number
+  changes: Array<{ path: string; status: string }>
+  lastCommit: { hash: string; message: string; author: string; date: string } | null
+}
+
+export interface GitCommit {
+  hash: string
+  message: string
+  author: string
+  date: string
+}
+
+export interface GitBranch {
+  name: string
+  current: boolean
+}
+
+export interface RunSuggestion {
+  name: string
+  cmd: string
+  bin: string
+  args: string[]
+  custom?: boolean
+}
+
+export interface Project {
+  id: string
+  workspace_id: string
+  name: string
+  path: string
+  type: ProjectType
+  framework: string | null
+  runtime_id: string | null
+  tags: string[] | null
+  description: string | null
+  progress_percent: number
+  progress_stage: ProgressStage
+  progress_note: string
+  remotes?: ProjectRemote[]
+  last_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface Runtime {
+  id: string
+  kind: RuntimeKind
+  version: string
+  path: string
+  is_default: number
+  source: string | null
+  created_at: string
+}
+
+export interface TaskHistory {
+  id: string
+  project_id: string
+  type: TaskType
+  status: TaskStatus
+  command: string | null
+  log_path: string | null
+  pid: number | null
+  exit_code: number | null
+  started_at: string
+  ended_at: string | null
+}
+
+export interface DetectResult {
+  type: ProjectType
+  framework: string | null
+  suggestedName: string
+  isGit: boolean
+  branch: string | null
+  remotes: Array<{ name: string; url: string; platform: GitPlatform; is_default: number }>
+  subProjects?: SubProject[]
+}
+
+export interface SubProject {
+  path: string
+  name: string
+  type: ProjectType
+  framework: string | null
+}
+
+export interface RunCommand {
+  bin: string
+  args: string[]
+  env: Record<string, string | undefined>
+  cwd: string
+}
+
+export interface LogChunk {
+  taskId: string
+  stream: 'stdout' | 'stderr'
+  data: string
+  timestamp: number
+}
