@@ -100,6 +100,16 @@ CREATE TABLE IF NOT EXISTS git_account (
   created_at    TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS task (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL,
+  tag         TEXT NOT NULL DEFAULT 'chore',
+  done        INTEGER DEFAULT 0,
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_todo ON task(project_id, done);
+
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at TEXT DEFAULT (datetime('now'))

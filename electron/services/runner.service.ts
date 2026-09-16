@@ -1,4 +1,4 @@
-import { spawn } from 'child_process'
+import { spawn, execFile } from 'child_process'
 import type { ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
@@ -135,6 +135,38 @@ class RunnerService {
     setTimeout(() => {
       if (this.running.has(taskId)) killGroup('SIGKILL')
     }, 3000)
+  }
+
+  probeExternal(projectPath: string): Promise<{ running: boolean; processes: Array<{ pid: number; command: string }> }> {
+    return new Promise((resolve) => {
+      const prefix = projectPath.endsWith('/') ? projectPath : projectPath + '/'
+      execFile(
+        'lsof',
+        ['-w', '-n', '-d', 'cwd', '-F', 'pn'],
+        { maxBuffer: 8 * 1024 * 1024, timeout: 20000 },
+        (err, stdout) => {
+          if (err) return resolve({ running: false, processes: [] })
+          const pids = new Set<number>()
+          let cur: number | null = null
+          for (const line of String(stdout || '').split('\n')) {
+            if (line.startsWith('p')) cur = Number(line.slice(1))
+            else if (line.startsWith('n') && cur && line.slice(1) === projectPath) pids.add(cur)
+          }
+          if (!pids.size) return resolve({ running: false, processes: [] })
+          execFile('ps', ['-o', 'pid=,command=', '-p', [...pids].join(',')], (e2, out2) => {
+            const procs = String(out2 || '')
+              .split('\n')
+              .filter((l) => l.trim())
+              .map((l) => {
+                const [pidStr, ...rest] = l.trim().split(/\s+/)
+                return { pid: Number(pidStr), command: rest.join(' ') }
+              })
+              .filter((p) => p.pid && !p.command.includes('lsof'))
+            resolve({ running: procs.length > 0, processes: procs })
+          })
+        }
+      )
+    })
   }
 
   listRunning(): TaskHistory[] {

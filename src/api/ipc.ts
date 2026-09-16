@@ -6,6 +6,7 @@ import type {
   DetectResult,
   GitSummary,
   GitCommit,
+  TaskItem,
   GitBranch,
   RunSuggestion,
   LogChunk,
@@ -34,6 +35,12 @@ export interface ProjectHubAPI {
     customCommands: {
       get: (id: string) => Promise<string[]>
       save: (id: string, cmds: string[]) => Promise<string[]>
+    },
+    tasks: {
+      list: (id: string) => Promise<TaskItem[]>
+      add: (id: string, title: string, tag: string) => Promise<TaskItem[]>
+      toggle: (taskId: string) => Promise<TaskItem | null>
+      remove: (taskId: string) => Promise<boolean>
     }
   }
   git: {
@@ -57,6 +64,7 @@ export interface ProjectHubAPI {
   runner: {
     start: (projectId: string) => Promise<string>
     startCustom: (projectId: string, cmd: { bin: string; args: string[]; display?: string }) => Promise<string>
+    probeExternal: (projectId: string) => Promise<{ running: boolean; processes: Array<{ pid: number; command: string }> }>
     stop: (taskId: string) => Promise<void>
     listRunning: () => Promise<TaskHistory[]>
     onLog: (callback: (chunk: LogChunk) => void) => () => void

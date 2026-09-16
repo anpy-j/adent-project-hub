@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useProjectStore } from '../stores/project'
-import type { Project, LogChunk, TaskHistory } from '../types'
+import type { Project, LogChunk, RunSuggestion, TaskHistory } from '../types'
 import LogPanel from '../components/LogPanel.vue'
 import AddProjectDialog from '../components/AddProjectDialog.vue'
 
@@ -17,20 +17,55 @@ const activeProject = ref<Project | null>(null)
 const runningTasks = ref<Record<string, string>>({}) // projectId -> taskId
 const logPanelRef = ref<InstanceType<typeof LogPanel> | null>(null)
 
+const viewMode = ref<'table' | 'card'>('table')
+const keyword = ref('')
+const platformFilter = ref('all')
+const stageFilter = ref<'all' | 'developing' | 'released'>('all')
+
 const filteredProjects = computed(() =>
   workspaceStore.currentId
     ? projectStore.projects.filter((p) => p.workspace_id === workspaceStore.currentId)
     : projectStore.projects
 )
 
+const tableRows = computed(() => {
+  const k = keyword.value.trim().toLowerCase()
+  return filteredProjects.value.filter((p) => {
+    if (platformFilter.value === 'linked' && !(p.remotes && p.remotes.length)) return false
+    if (platformFilter.value === 'local' && p.remotes && p.remotes.length) return false
+    if (stageFilter.value === 'developing' && (p.progress_percent || 0) === 0) return false
+    if (stageFilter.value === 'released' && p.progress_stage !== 'released') return false
+    if (!k) return true
+    return (
+      p.name.toLowerCase().includes(k) ||
+      p.path.toLowerCase().includes(k) ||
+      (p.remotes || []).some((r) => r.url.toLowerCase().includes(k))
+    )
+  })
+})
+
+const activeCount = computed(() => filteredProjects.value.filter((p) => (p.progress_percent || 0) > 0).length)
+const linkedCount = computed(() => filteredProjects.value.filter((p) => p.remotes && p.remotes.length).length)
+const runningCount = computed(() => Object.keys(runningTasks.value).length)
+
+const stats = computed(() => [
+  { label: '项目总数', value: String(filteredProjects.value.length), icon: 'Folder', tone: 'primary' },
+  { label: '开发中项目', value: String(activeCount.value), icon: 'TrendCharts', tone: 'success' },
+  { label: '已关联远程', value: String(linkedCount.value), icon: 'Link', tone: 'warning' },
+  { label: '运行中任务', value: String(runningCount.value), icon: 'VideoPlay', tone: 'info' }
+])
+
 onMounted(async () => {
   if (!workspaceStore.list.length) await workspaceStore.load()
   await projectStore.load(workspaceStore.currentId || undefined)
 })
 
-watch(() => workspaceStore.currentId, () => {
-  projectStore.load(workspaceStore.currentId || undefined)
-})
+watch(
+  () => workspaceStore.currentId,
+  () => {
+    projectStore.load(workspaceStore.currentId || undefined)
+  }
+)
 
 const typeLabel: Record<string, string> = {
   'java-maven': 'Java · Maven',
@@ -52,12 +87,77 @@ const typeColor: Record<string, string> = {
   node: '#5fa04e',
   unknown: '#909399'
 }
-
 const stageLabel: Record<string, string> = {
   planning: '规划中',
   developing: '开发中',
   testing: '联调测试',
   released: '已发布'
+}
+
+function platformLabel(p: Project): string {
+  const r = (p.remotes || [])[0]?.platform
+  return r === 'github' ? 'GitHub' : r === 'gitee' ? 'Gitee' : r === 'gitlab' ? 'GitLab' : r ? 'Git' : '仅本地'
+}
+
+function shortRemote(url: string): string {
+  return url.replace(/^git@([^:]+):/, '$1/').replace(/^https?:\/\//, '').replace(/\.git$/, '')
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return '-'
+  const t = iso.includes('T') ? new Date(iso).getTime() : new Date(iso.replace(' ', 'T') + 'Z').getTime()
+  if (isNaN(t)) return '-'
+  const m = Math.floor((Date.now() - t) / 60000)
+  if (m < 1) return '刚刚'
+  if (m < 60) return `${m} 分钟前`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} 小时前`
+  const d = Math.floor(h / 24)
+  return d < 30 ? `${d} 天前` : new Date(t).toLocaleDateString()
+}
+
+function onRowMenu(cmd: string, row: Project) {
+  if (cmd === 'log') {
+    activeProject.value = row
+    logPanelRef.value?.show()
+  } else if (cmd === 'finder') {
+    openInFinder(row)
+  } else if (cmd === 'remove') {
+    removeProject(row)
+  }
+}
+
+const runDialog = ref(false)
+const runTarget = ref<Project | null>(null)
+const runCmdList = ref<RunSuggestion[]>([])
+const runCmdLoading = ref(false)
+
+async function openRunDialog(p: Project) {
+  runTarget.value = p
+  runDialog.value = true
+  runCmdLoading.value = true
+  try {
+    runCmdList.value = await window.api.project.runCommands(p.id)
+  } catch {
+    runCmdList.value = []
+  } finally {
+    runCmdLoading.value = false
+  }
+}
+
+async function startWith(c: RunSuggestion) {
+  if (!runTarget.value) return
+  try {
+    const payload = JSON.parse(JSON.stringify({ bin: c.bin, args: c.args, display: c.cmd }))
+    const taskId = await window.api.runner.startCustom(runTarget.value.id, payload)
+    runningTasks.value[runTarget.value.id] = taskId
+    activeProject.value = runTarget.value
+    logPanelRef.value?.attach(taskId, runTarget.value)
+    runDialog.value = false
+    ElMessage.success(`已启动：${c.cmd}`)
+  } catch (e) {
+    ElMessage.error(`启动失败: ${(e as Error).message}`)
+  }
 }
 
 function openAdd() {
@@ -114,25 +214,154 @@ window.api.runner.onLog((chunk: LogChunk) => {
 
 <template>
   <div class="project-list-view">
-    <div class="toolbar">
-      <div class="title">
+    <!-- 页头 -->
+    <div class="page-head">
+      <div>
         <h2>项目列表</h2>
-        <el-tag v-if="workspaceStore.currentId" type="info" size="small">
-          {{ workspaceStore.list.find((w) => w.id === workspaceStore.currentId)?.name }}
-        </el-tag>
+        <p class="head-sub">
+          共 {{ filteredProjects.length }} 个项目
+          <el-tag v-if="workspaceStore.currentId" type="info" size="small" effect="plain">
+            {{ workspaceStore.list.find((w) => w.id === workspaceStore.currentId)?.name }}
+          </el-tag>
+        </p>
       </div>
-      <el-button type="primary" @click="openAdd">
-        <el-icon><Plus /></el-icon>添加项目
-      </el-button>
+      <div class="head-actions">
+        <el-input v-model="keyword" placeholder="搜索名称 / 路径 / 仓库地址" clearable class="search-input">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-button type="primary" @click="openAdd">
+          <el-icon><Plus /></el-icon>添加项目
+        </el-button>
+      </div>
     </div>
 
-    <div v-loading="projectStore.loading" class="project-grid">
-      <el-empty
-        v-if="!filteredProjects.length && !projectStore.loading"
-        description="还没有项目，点右上角添加"
-      />
+    <!-- 指标行 -->
+    <div class="stats-row">
+      <div v-for="s in stats" :key="s.label" class="stat-card">
+        <div class="stat-icon" :class="'tone-' + s.tone">
+          <el-icon :size="20"><component :is="s.icon" /></el-icon>
+        </div>
+        <div class="stat-body">
+          <div class="stat-num">{{ s.value }}</div>
+          <div class="stat-label">{{ s.label }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具条 -->
+    <div class="filter-bar">
+      <el-radio-group v-model="platformFilter" size="small">
+        <el-radio-button value="all">全部</el-radio-button>
+        <el-radio-button value="linked">已关联远程</el-radio-button>
+        <el-radio-button value="local">仅本地</el-radio-button>
+      </el-radio-group>
+      <el-radio-group v-model="stageFilter" size="small">
+        <el-radio-button value="all">全部阶段</el-radio-button>
+        <el-radio-button value="developing">开发中</el-radio-button>
+        <el-radio-button value="released">已发布</el-radio-button>
+      </el-radio-group>
+      <span class="flex-1" />
+      <el-radio-group v-model="viewMode" size="small">
+        <el-radio-button value="table"><el-icon><Grid /></el-icon></el-radio-button>
+        <el-radio-button value="card"><el-icon><Menu /></el-icon></el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <!-- 表格视图（企业级默认） -->
+    <el-card v-if="viewMode === 'table'" class="table-card" shadow="never">
+      <el-table
+        :data="tableRows"
+        style="width: 100%"
+        :header-cell-style="{ background: 'var(--el-fill-color-light)', color: 'var(--el-text-color-secondary)', fontWeight: 600 }"
+        empty-text="暂无项目，点击右上角添加"
+        @row-click="(row: unknown) => router.push(`/projects/${(row as Project).id}`)"
+      >
+        <el-table-column label="项目" min-width="240">
+          <template #default="{ row }">
+            <div class="cell-project">
+              <div class="proj-name">
+                <span class="proj-title">{{ row.name }}</span>
+                <el-tag size="small" :style="{ backgroundColor: typeColor[row.type], color: '#fff', border: 'none' }">
+                  {{ typeLabel[row.type] }}
+                </el-tag>
+                <el-tag v-if="row.framework" size="small" effect="plain">{{ row.framework }}</el-tag>
+              </div>
+              <div class="proj-path">{{ row.path }}</div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="远程仓库" min-width="180">
+          <template #default="{ row }">
+            <div v-if="(row as Project).remotes && (row as Project).remotes!.length" class="cell-remote">
+              <el-tag size="small" effect="plain">{{ platformLabel(row as Project) }}</el-tag>
+              <span class="remote-text" :title="(row as Project).remotes![0].url">{{ (row as Project).remotes![0].url }}</span>
+            </div>
+            <span v-else class="cell-muted">仅本地</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="开发进度" width="180">
+          <template #default="{ row }">
+            <div class="cell-progress">
+              <el-progress
+                :percentage="row.progress_percent || 0"
+                :stroke-width="6"
+                :show-text="false"
+                class="progress"
+              />
+              <span class="progress-num">{{ row.progress_percent || 0 }}%</span>
+            </div>
+            <span class="stage-text">{{ stageLabel[row.progress_stage] || '规划中' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="runningTasks[row.id]" type="warning" size="small">运行中</el-tag>
+            <el-tag v-else-if="!row.remotes?.length" type="info" size="small">未关联</el-tag>
+            <el-tag v-else type="success" size="small">正常</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近活动" width="120">
+          <template #default="{ row }">
+            <span class="cell-time">{{ timeAgo(row.last_run_at || row.updated_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="230" align="right">
+          <template #default="{ row }">
+            <div class="cell-actions" @click.stop>
+              <el-button
+                v-if="!runningTasks[row.id]"
+                type="primary"
+                size="small"
+                @click.stop="openRunDialog(row as Project)"
+              >
+                运行
+              </el-button>
+              <el-button v-else type="danger" size="small" @click.stop="stopProject(row as Project)">
+                停止
+              </el-button>
+              <el-button size="small" @click.stop="router.push(`/projects/${(row as Project).id}`)">详情</el-button>
+              <el-dropdown trigger="click" @command="(cmd: string) => onRowMenu(cmd, row as Project)">
+                <el-button size="small" @click.stop>
+                  <el-icon><MoreFilled /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="log">日志</el-dropdown-item>
+                    <el-dropdown-item command="finder">打开目录</el-dropdown-item>
+                    <el-dropdown-item command="remove" divided>删除项目</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <!-- 卡片视图 -->
+    <div v-else class="project-grid">
       <el-card
-        v-for="p in filteredProjects"
+        v-for="p in tableRows"
         :key="p.id"
         class="project-card"
         shadow="hover"
@@ -151,31 +380,12 @@ window.api.runner.onLog((chunk: LogChunk) => {
           <el-icon><FolderOpened /></el-icon>
           <span>{{ p.path }}</span>
         </div>
-        <div v-if="p.framework" class="framework">
-          <el-tag size="small" effect="plain">{{ p.framework }}</el-tag>
-        </div>
-        <div class="git-row" v-if="p.remotes && p.remotes.length">
-          <el-icon><Link /></el-icon>
-          <span class="remote-url">{{ p.remotes[0].url }}</span>
-        </div>
-        <div class="progress-row">
-          <el-progress
-            :percentage="p.progress_percent || 0"
-            :stroke-width="6"
-            :show-text="false"
-            class="progress-bar"
-          />
-          <span class="progress-num">{{ p.progress_percent || 0 }}%</span>
-          <el-tag size="small" effect="plain" type="info">
-            {{ stageLabel[p.progress_stage] || '规划中' }}
-          </el-tag>
-        </div>
         <div class="actions">
           <el-button
             v-if="!runningTasks[p.id]"
             type="primary"
             size="small"
-            @click.stop="runProject(p)"
+            @click.stop="openRunDialog(p)"
           >
             <el-icon><VideoPlay /></el-icon>运行
           </el-button>
@@ -199,6 +409,23 @@ window.api.runner.onLog((chunk: LogChunk) => {
       :workspace-id="workspaceStore.currentId"
       @added="onAdded"
     />
+
+    <!-- 运行命令选择 -->
+    <el-dialog v-model="runDialog" title="选择运行命令" width="560">
+      <div v-loading="runCmdLoading" class="run-cmd-list">
+        <div
+          v-for="c in runCmdList"
+          :key="c.cmd"
+          class="run-cmd-row"
+          @click="startWith(c)"
+        >
+          <span class="mono">{{ c.cmd }}</span>
+          <el-tag v-if="c.custom" size="small" type="info">自定义</el-tag>
+          <el-button size="small" type="primary">启动</el-button>
+        </div>
+        <el-empty v-if="!runCmdList.length && !runCmdLoading" description="未识别到运行命令" :image-size="60" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -207,22 +434,153 @@ window.api.runner.onLog((chunk: LogChunk) => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  padding: 20px 24px;
 }
-.toolbar {
+.page-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
 }
-.title {
+.page-head h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--el-text-color-primary);
+}
+.head-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
-.title h2 {
-  margin: 0;
-  font-size: 18px;
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.search-input {
+  width: 280px;
+}
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.stat-card {
+  background: #fff;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.stat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tone-primary {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.tone-success {
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+}
+.tone-warning {
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
+}
+.tone-info {
+  background: var(--el-color-info-light-9);
+  color: var(--el-color-info);
+}
+.stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  line-height: 1.2;
+}
+.stat-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.table-card {
+  flex: 1;
+  overflow: hidden;
+}
+.cell-project {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+.proj-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.proj-path {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+.cell-remote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.remote-text {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+.cell-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.progress {
+  flex: 1;
+}
+.progress-num {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  width: 36px;
+}
+.stage-text {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.cell-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.text-muted {
+  color: var(--el-text-color-secondary);
 }
 .project-grid {
   flex: 1;
@@ -237,40 +595,6 @@ window.api.runner.onLog((chunk: LogChunk) => {
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  transition: transform 0.15s;
-}
-.project-card:hover {
-  border-color: var(--el-color-primary-light-5);
-}
-.remote-url {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.git-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  margin-bottom: 8px;
-  overflow: hidden;
-}
-.git-row .remote-url {
-  flex: 1;
-}
-.progress-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.progress-bar {
-  flex: 1;
-}
-.progress-num {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
 }
 .card-head {
   display: flex;
@@ -301,12 +625,28 @@ window.api.runner.onLog((chunk: LogChunk) => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.framework {
-  margin-bottom: 12px;
-}
 .actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+.run-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.run-cmd-row:hover {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.run-cmd-row .mono {
+  flex: 1;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
 }
 </style>

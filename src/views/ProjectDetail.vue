@@ -2,8 +2,8 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshRight, Search, VideoPlay, VideoPause } from '@element-plus/icons-vue'
-import type { GitBranch, GitCommit, GitSummary, LogChunk, Project, RunSuggestion, TaskHistory } from '../types'
+import { Edit as EditIcon, RefreshRight, Search, VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import type { GitBranch, GitCommit, GitSummary, LogChunk, Project, RunSuggestion, TaskHistory, TaskItem } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +37,14 @@ const runLogs = ref<string[]>([])
 const runLogsText = computed(() => runLogs.value.join(''))
 const logBoxRef = ref<HTMLElement | null>(null)
 const runTaskId = ref('')
+const external = ref<{ running: boolean; processes: Array<{ pid: number; command: string }> }>({
+  running: false,
+  processes: []
+})
+
+const tasks = ref<TaskItem[]>([])
+const newTaskTitle = ref('')
+const newTaskTag = ref<'feature' | 'bug' | 'chore'>('feature')
 
 const selectedChanges = ref<Set<string>>(new Set())
 const commitMessage = ref('')
@@ -74,6 +82,14 @@ async function loadCommits() {
     commits.value = await window.api.git.log(projectId, 20)
   } catch {
     commits.value = []
+  }
+}
+
+async function loadTasks() {
+  try {
+    tasks.value = await window.api.project.tasks.list(projectId)
+  } catch {
+    tasks.value = []
   }
 }
 
@@ -117,7 +133,7 @@ async function createBranch() {
   }
 }
 
-
+/* ---------- Git 提交 ---------- */
 function toggleChange(path: string) {
   const set = new Set(selectedChanges.value)
   if (set.has(path)) set.delete(path)
@@ -262,6 +278,11 @@ async function loadRunState() {
   } catch {
     runTask.value = null
   }
+  try {
+    external.value = await window.api.runner.probeExternal(projectId)
+  } catch {
+    external.value = { running: false, processes: [] }
+  }
 }
 
 async function runCommand(c: RunSuggestion) {
@@ -350,6 +371,43 @@ async function removeCustomCommand(cmd: string) {
   }
 }
 
+async function addTask() {
+  const title = newTaskTitle.value.trim()
+  if (!title) {
+    ElMessage.warning('请填写任务标题')
+    return
+  }
+  try {
+    tasks.value = await window.api.project.tasks.add(projectId, title, newTaskTag.value)
+    newTaskTitle.value = ''
+    await load()
+  } catch (e) {
+    ElMessage.error(`添加失败: ${(e as Error).message}`)
+  }
+}
+
+async function toggleTask(t: TaskItem) {
+  try {
+    await window.api.project.tasks.toggle(t.id)
+    await loadTasks()
+    const detail = await window.api.project.detail(projectId)
+    project.value = detail
+    progress.value.percent = detail.progress_percent || 0
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
+async function removeTask(t: TaskItem) {
+  try {
+    await window.api.project.tasks.remove(t.id)
+    tasks.value = tasks.value.filter((x) => x.id !== t.id)
+    await load()
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
 /* ---------- 基本信息 ---------- */
 async function saveBasic() {
   if (!project.value) return
@@ -367,16 +425,32 @@ async function saveBasic() {
   }
 }
 
+const nameEditing = ref(false)
+
+async function saveName() {
+  if (!project.value) return
+  const name = editForm.value.name.trim()
+  nameEditing.value = false
+  if (!name || name === project.value.name) return
+  try {
+    await window.api.project.update(project.value.id, { name })
+    ElMessage.success('已重命名')
+    load()
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
+/* ---------- 开发进度 ---------- */
 async function saveProgress() {
   if (!project.value) return
   saving.value = true
   try {
     await window.api.project.update(project.value.id, {
-      progress_percent: progress.value.percent,
       progress_stage: progress.value.stage,
       progress_note: progress.value.note
     })
-    ElMessage.success('进度已保存')
+    ElMessage.success('阶段与备注已保存')
   } catch (e) {
     ElMessage.error(`保存失败: ${(e as Error).message}`)
   } finally {
@@ -458,6 +532,7 @@ onMounted(() => {
   loadBranches()
   loadRunCommands()
   loadRunState()
+  loadTasks()
   window.api.runner.onLog(appendRunLog)
   window.api.runner.onStatus(onRunStatus)
 })
@@ -474,21 +549,18 @@ onMounted(() => {
     <template v-if="project">
       <el-card class="head-card">
         <div class="head-line">
-          <h2 class="name">{{ project.name }}</h2>
+          <template v-if="nameEditing">
+            <el-input v-model="editForm.name" size="default" style="width: 240px" @keyup.enter="saveName" @blur="saveName" />
+          </template>
+          <template v-else>
+            <h2 class="name" title="点击重命名" @click="nameEditing = true">
+              {{ project.name }}<el-icon class="edit-icon"><Edit /></el-icon>
+            </h2>
+          </template>
           <el-tag size="small">{{ typeLabel[project.type] || project.type }}</el-tag>
           <el-tag v-if="project.framework" size="small" effect="plain">{{ project.framework }}</el-tag>
-          <el-input v-model="editForm.name" size="small" style="width: 180px" placeholder="名称" />
-          <el-input
-            v-model="editForm.description"
-            size="small"
-            style="flex: 1"
-            placeholder="描述"
-            @keyup.enter="saveBasic"
-          />
-          <el-button size="small" type="primary" plain :loading="savingBasic" @click="saveBasic">保存</el-button>
-          <el-button size="small" @click="openFolder()">
-            <el-icon><FolderOpened /></el-icon>目录
-          </el-button>
+          <span v-if="runTask?.status === 'running'" class="run-badge"><span class="dot" />运行中</span>
+          <span v-else-if="external.running" class="run-badge ext"><span class="dot" />外部进程</span>
         </div>
         <div class="meta-line">
           <span class="path" :title="project.path" @click="openFolder()">{{ project.path }}</span>
@@ -497,24 +569,40 @@ onMounted(() => {
             <span class="mono">⑂ {{ git.branch }}</span>
             <el-tag v-if="git.ahead > 0" type="danger" size="small">↑ {{ git.ahead }}</el-tag>
             <el-tag v-if="git.behind > 0" type="warning" size="small">↓ {{ git.behind }}</el-tag>
-            <el-tag v-if="git.ahead === 0 && git.behind === 0" type="success" size="small">已同步</el-tag>
+            <span v-if="git.lastCommit" class="mono dim">{{ git.lastCommit.hash }} {{ git.lastCommit.message }}</span>
           </template>
           <el-tag v-else size="small" type="info">未检测到 git 仓库</el-tag>
+        </div>
+        <div class="desc-row">
+          <el-input
+            v-model="editForm.description"
+            size="small"
+            style="flex: 1"
+            placeholder="项目描述，一句话说明这个项目做什么"
+            @keyup.enter="saveBasic"
+          >
+            <template #prefix><el-icon><EditPen /></el-icon></template>
+          </el-input>
+          <el-button size="small" type="primary" plain :loading="savingBasic" @click="saveBasic">保存描述</el-button>
+          <el-button size="small" @click="openFolder()"><el-icon><FolderOpened /></el-icon>目录</el-button>
+          <el-button size="small" @click="recognize" :loading="busy === 'sync'"><el-icon><Search /></el-icon>识别</el-button>
         </div>
       </el-card>
 
       <div class="grid">
-        <div class="col">
+        <div class="col col-l">
           <el-card class="block">
             <template #header>
               <div class="head-row">
-                <b>开发进度（手动维护）</b>
-                <el-tag size="small" type="info">{{ stageLabel[progress.stage] }}</el-tag>
+                <b>开发进度</b>
+                <span class="task-summary">
+                  {{ tasks.length ? `${tasks.filter((t) => t.done).length}/${tasks.length} 已完成` : '暂无任务' }}
+                </span>
               </div>
             </template>
             <div class="progress-top">
               <span class="progress-num">{{ progress.percent }}%</span>
-              <el-slider v-model="progress.percent" :step="5" style="flex: 1" />
+              <el-progress :percentage="progress.percent" :stroke-width="10" :show-text="false" style="flex: 1" />
             </div>
             <el-radio-group v-model="progress.stage" class="stage">
               <el-radio-button value="planning">规划中</el-radio-button>
@@ -522,221 +610,185 @@ onMounted(() => {
               <el-radio-button value="testing">联调测试</el-radio-button>
               <el-radio-button value="released">已发布</el-radio-button>
             </el-radio-group>
-            <el-input
-              v-model="progress.note"
-              type="textarea"
-              :rows="3"
-              placeholder="当前进展备注，例如：完成登录模块，正在开发订单接口…"
-            />
+            <el-input v-model="progress.note" type="textarea" :rows="2" placeholder="当前进展备注…" />
             <el-button type="primary" :loading="saving" style="margin-top: 12px" @click="saveProgress">
-              保存进度
+              保存阶段与备注
             </el-button>
+
+            <el-divider>任务列表（驱动进度）</el-divider>
+            <div class="task-add">
+              <el-input v-model="newTaskTitle" size="small" placeholder="新任务标题" @keyup.enter="addTask" />
+              <el-select v-model="newTaskTag" size="small" style="width: 100px">
+                <el-option label="功能" value="feature" />
+                <el-option label="缺陷" value="bug" />
+                <el-option label="杂项" value="chore" />
+              </el-select>
+              <el-button size="small" type="primary" @click="addTask">添加</el-button>
+            </div>
+            <div class="task-list">
+              <div v-for="t in tasks" :key="t.id" class="task-row">
+                <el-checkbox :model-value="!!t.done" @change="toggleTask(t)" />
+                <span class="task-title" :class="{ done: t.done }">{{ t.title }}</span>
+                <el-tag size="small" effect="plain" :type="t.tag === 'bug' ? 'danger' : t.tag === 'feature' ? 'primary' : 'info'">
+                  {{ t.tag }}
+                </el-tag>
+                <el-button size="small" text type="danger" @click="removeTask(t)">删除</el-button>
+              </div>
+              <el-empty v-if="!tasks.length" description="暂无任务，进度按任务完成比例自动计算" :image-size="50" />
+            </div>
           </el-card>
 
-          <el-card class="block">
-            <template #header>
-              <div class="head-row">
-                <b>Git 仓库</b>
-                <div class="branch-row">
-                  <el-select
-                    v-if="branches.length"
-                    v-model="selectedBranch"
-                    size="small"
-                    style="width: 160px"
-                    placeholder="切换分支"
-                    @change="switchBranch"
-                  >
-                    <el-option
-                      v-for="b in branches"
-                      :key="b.name"
-                      :label="b.name + (b.current ? '（当前）' : '')"
-                      :value="b.name"
-                    />
-                  </el-select>
-                  <el-input
-                    v-model="newBranch"
-                    size="small"
-                    placeholder="新分支名"
-                    style="width: 120px"
-                    @keyup.enter="createBranch"
-                  />
-                  <el-button size="small" @click="createBranch">创建</el-button>
+          <el-card class="block" v-if="git?.isGit">
+            <template #header><b>Git 工作区</b></template>
+            <el-tabs>
+              <el-tab-pane label="变更与提交">
+                <div v-if="git.changes.length" class="changes-list">
+                  <label v-for="f in git.changes" :key="f.path" class="change-row">
+                    <el-checkbox :model-value="selectedChanges.has(f.path)" @change="toggleChange(f.path)" />
+                    <el-tag size="small" effect="plain">{{ f.status }}</el-tag>
+                    <span class="remote-url" :title="f.path">{{ f.path }}</span>
+                  </label>
                 </div>
-              </div>
-            </template>
+                <div v-else class="tip-line" style="padding: 4px 0 8px">工作区干净，没有未提交变更</div>
+                <el-input v-model="commitMessage" placeholder="提交说明，如 feat: 新增 xx 功能" />
+                <div class="btn-row" style="margin-top: 10px">
+                  <el-button
+                    size="small" type="primary" :loading="busy === 'commit'"
+                    :disabled="!commitMessage.trim() || (!selectedChanges.size && !git.changes.length)"
+                    @click="doCommit(false)"
+                  >提交{{ selectedChanges.size ? `所选 ${selectedChanges.size} 个` : '全部' }}</el-button>
+                  <el-button
+                    size="small" type="success" :loading="busy === 'commit-push'"
+                    :disabled="!commitMessage.trim() || (!selectedChanges.size && !git.changes.length)"
+                    @click="commitAndPush"
+                  >提交并推送</el-button>
+                  <el-button size="small" :loading="busy === 'pull'" @click="doPull">拉取</el-button>
+                  <el-button size="small" :loading="busy === 'push'" @click="doPush">推送</el-button>
+                </div>
+              </el-tab-pane>
+              <el-tab-pane label="远程与分支">
+                <div class="branch-row">
+                  <el-select v-if="branches.length" v-model="selectedBranch" size="small" style="width: 180px" placeholder="切换分支" @change="switchBranch">
+                    <el-option v-for="b in branches" :key="b.name" :label="b.name + (b.current ? '（当前）' : '')" :value="b.name" />
+                  </el-select>
+                  <el-input v-model="newBranch" size="small" placeholder="新分支名" style="width: 140px" @keyup.enter="createBranch" />
+                  <el-button size="small" @click="createBranch">创建并切换</el-button>
+                </div>
+                <div class="sub-title">远程仓库</div>
+                <el-empty v-if="!project.remotes?.length" description="未关联远程仓库" :image-size="50" />
+                <div v-for="r in project.remotes" :key="r.id" class="remote-row">
+                  <el-tag size="small" effect="dark">{{ r.name }}</el-tag>
+                  <el-tag v-if="r.is_default" size="small" type="success">默认</el-tag>
+                  <el-tag size="small" effect="plain">{{ platformLabel[r.platform] || r.platform }}</el-tag>
+                  <span class="remote-url" :title="r.url">{{ r.url }}</span>
+                  <el-button size="small" text type="primary" @click="openRepo(r.url)">网页</el-button>
+                </div>
+                <div class="btn-row" style="margin-bottom: 8px">
+                  <el-button size="small" :icon="RefreshRight" @click="syncRemotes">从本地读取</el-button>
+                  <el-button size="small" type="primary" plain :loading="busy === 'pull'" @click="doPull">拉取</el-button>
+                  <el-button size="small" type="primary" :loading="busy === 'push'" @click="doPush">推送</el-button>
+                </div>
+                <el-divider>手动添加远程仓库</el-divider>
+                <el-input v-model="linkForm.url" placeholder="git@github.com:you/repo.git 或 https://...">
+                  <template #prepend>地址</template>
+                </el-input>
+                <el-input v-model="linkForm.name" placeholder="remote 名称（默认 origin）" class="link-name" />
+                <div class="btn-row">
+                  <el-button :loading="busy === 'link'" @click="linkOnly">仅关联</el-button>
+                  <el-button type="primary" :loading="busy === 'upload'" @click="linkAndUpload">添加并首次上传</el-button>
+                </div>
+              </el-tab-pane>
+            </el-tabs>
+          </el-card>
 
-            <template v-if="!git?.isGit">
-              <el-alert type="warning" :closable="false" show-icon class="tip-alert">
-                <template #title>
-                  未检测到本地 git 仓库。若刚执行过 git init / clone，点「识别」刷新；也可直接在下方手动关联远程仓库。
-                </template>
-              </el-alert>
-              <el-button class="recognize-btn" :loading="busy === 'sync'" @click="recognize">
-                <el-icon><Search /></el-icon>识别本地仓库
-              </el-button>
-            </template>
-
-            <template v-else>
-              <el-empty
-                v-if="!project.remotes?.length"
-                description="本地是 git 仓库，但还没有 remote，可在下方手动添加"
-                :image-size="60"
-              />
+          <el-card class="block" v-if="!git?.isGit">
+            <template #header><b>Git 仓库关联</b></template>
+            <el-alert type="warning" :closable="false" show-icon class="tip-alert">
+              <template #title>未检测到本地 git 仓库。可点顶部「识别」刷新，或在下方手动关联远程仓库。</template>
+            </el-alert>
+            <template v-if="project.remotes?.length">
+              <div class="tip-line" style="padding: 6px 0">已登记的仓库关联（本地 git 初始化后自动生效）：</div>
               <div v-for="r in project.remotes" :key="r.id" class="remote-row">
                 <el-tag size="small" effect="dark">{{ r.name }}</el-tag>
-                <el-tag v-if="r.is_default" size="small" type="success">默认</el-tag>
                 <el-tag size="small" effect="plain">{{ platformLabel[r.platform] || r.platform }}</el-tag>
                 <span class="remote-url" :title="r.url">{{ r.url }}</span>
                 <el-button size="small" text type="primary" @click="openRepo(r.url)">打开网页</el-button>
               </div>
-              <div class="btn-row" style="margin-bottom: 4px">
-                <el-button size="small" :icon="RefreshRight" @click="syncRemotes">从本地读取</el-button>
-                <el-button size="small" type="primary" plain :loading="busy === 'pull'" @click="doPull">
-                  拉取
-                </el-button>
-                <el-button size="small" type="primary" :loading="busy === 'push'" @click="doPush">
-                  推送
-                </el-button>
-              </div>
             </template>
-
-            <template v-if="git?.isGit">
-              <el-divider>提交改动</el-divider>
-              <div v-if="git.changes.length" class="changes-list">
-                <label v-for="f in git.changes" :key="f.path" class="change-row">
-                  <el-checkbox
-                    :model-value="selectedChanges.has(f.path)"
-                    @change="toggleChange(f.path)"
-                  />
-                  <el-tag size="small" effect="plain">{{ f.status }}</el-tag>
-                  <span class="remote-url" :title="f.path">{{ f.path }}</span>
-                </label>
-              </div>
-              <div v-else class="tip-line" style="padding: 4px 0 8px">工作区干净，没有未提交变更</div>
-              <el-input v-model="commitMessage" placeholder="提交说明，如 feat: 新增 xx 功能" />
-              <div class="btn-row" style="margin-top: 10px">
-                <el-button
-                  size="small"
-                  type="primary"
-                  :loading="busy === 'commit'"
-                  :disabled="!commitMessage.trim() || (!selectedChanges.size && !git.changes.length)"
-                  @click="doCommit(false)"
-                >
-                  提交{{ selectedChanges.size ? `所选 ${selectedChanges.size} 个` : '全部' }}
-                </el-button>
-                <el-button
-                  size="small"
-                  type="success"
-                  :loading="busy === 'commit-push'"
-                  :disabled="!commitMessage.trim() || (!selectedChanges.size && !git.changes.length)"
-                  @click="commitAndPush"
-                >
-                  提交并推送
-                </el-button>
-              </div>
-            </template>
-
-            <el-divider>{{ git?.isGit ? '手动添加远程仓库' : '手动关联远程仓库' }}</el-divider>
-            <el-input
-              v-model="linkForm.url"
-              placeholder="git@github.com:you/repo.git 或 https://github.com/you/repo.git"
-            >
+            <el-divider>手动关联远程仓库</el-divider>
+            <el-input v-model="linkForm.url" placeholder="git@github.com:you/repo.git 或 https://github.com/you/repo.git">
               <template #prepend>地址</template>
             </el-input>
             <el-input v-model="linkForm.name" placeholder="remote 名称（默认 origin）" class="link-name" />
             <div class="btn-row">
               <el-button :loading="busy === 'link'" @click="linkOnly">仅关联</el-button>
-              <el-button type="primary" :loading="busy === 'upload'" @click="linkAndUpload">
-                {{ git?.isGit ? '添加并首次上传' : '关联并首次上传' }}
-              </el-button>
+              <el-button type="primary" :loading="busy === 'upload'" @click="linkAndUpload">关联并首次上传</el-button>
             </div>
-            <div class="tip-line">
-              「首次上传」会自动：git init（如需）→ 添加 remote → 提交全部文件 → push -u origin
-            </div>
-          </el-card>
-        </div>
-
-        <div class="col">
-          <el-card class="block">
-            <template #header>
-              <div class="head-row">
-                <b>运行方式</b>
-                <span v-if="runTask?.status === 'running'" class="run-state">
-                  <span class="dot" />运行中
-                  <el-button size="small" type="danger" plain @click="stopRun">
-                    <el-icon><VideoPause /></el-icon>停止
-                  </el-button>
-                </span>
-              </div>
-            </template>
-            <div class="cmd-list">
-              <div v-for="c in runCommands" :key="c.cmd" class="cmd-row">
-                <span class="cmd-text mono">{{ c.cmd }}</span>
-                <el-tag v-if="c.custom" size="small" effect="plain" type="info">自定义</el-tag>
-                <el-button size="small" text type="danger" v-if="c.custom" @click="removeCustomCommand(c.cmd)">
-                  移除
-                </el-button>
-                <el-button
-                  size="small"
-                  type="primary"
-                  :disabled="runTask?.status === 'running'"
-                  @click="runCommand(c)"
-                >
-                  <el-icon><VideoPlay /></el-icon>运行
-                </el-button>
-              </div>
-              <el-empty v-if="!runCommands.length" description="未识别到运行方式" :image-size="50" />
-            </div>
-            <div class="custom-add">
-              <el-input
-                v-model="customCmd"
-                placeholder="手动添加运行命令，如 ./run.sh"
-                @keyup.enter="addCustomCommand"
-              />
-              <el-button type="primary" plain @click="addCustomCommand">添加</el-button>
-            </div>
-            <div v-if="runLogs.length" ref="logBoxRef" class="log-box">
-              <pre>{{ runLogsText }}</pre>
-            </div>
+            <div class="tip-line">「首次上传」会自动：git init → 添加 remote → 提交全部文件 → push -u origin</div>
           </el-card>
 
           <el-card class="block">
             <template #header>
               <div class="head-row">
                 <b>提交记录</b>
-                <el-button size="small" text @click="loadCommits">
-                  <el-icon><Refresh /></el-icon>刷新
-                </el-button>
+                <el-button size="small" text @click="loadCommits"><el-icon><Refresh /></el-icon>刷新</el-button>
               </div>
             </template>
-            <el-table v-if="commits.length" :data="commits" size="small" max-height="300">
+            <el-table v-if="commits.length" :data="commits" size="small" max-height="280">
               <el-table-column label="提交" width="90">
-                <template #default="{ row }">
-                  <span class="mono hash">{{ row.hash }}</span>
-                </template>
+                <template #default="{ row }"><span class="mono hash">{{ row.hash }}</span></template>
               </el-table-column>
               <el-table-column prop="message" label="说明" show-overflow-tooltip />
-              <el-table-column prop="author" label="作者" width="100" />
-              <el-table-column label="时间" width="150">
-                <template #default="{ row }">
-                  <span class="time">{{ fmtTime(row.date) }}</span>
-                </template>
+              <el-table-column label="时间" width="140">
+                <template #default="{ row }"><span class="time">{{ fmtTime(row.date) }}</span></template>
               </el-table-column>
             </el-table>
             <el-empty v-else description="暂无提交记录" :image-size="60" />
           </el-card>
+        </div>
+
+        <div class="col col-r">
+          <el-card class="block">
+            <template #header>
+              <div class="head-row">
+                <b>运行方式</b>
+                <span v-if="runTask?.status === 'running'" class="run-state">
+                  <span class="dot" />运行中
+                  <el-button size="small" type="danger" plain @click="stopRun">停止</el-button>
+                </span>
+              </div>
+            </template>
+            <div class="cmd-list">
+              <div v-for="c in runCommands" :key="c.cmd" class="cmd-row">
+                <span class="cmd-text mono">{{ c.cmd }}</span>
+                <el-tag v-if="c.custom" size="small" type="info" effect="plain">自定义</el-tag>
+                <el-button v-if="c.custom" size="small" text type="danger" @click="removeCustomCommand(c.cmd)">移除</el-button>
+                <el-button size="small" type="primary" :disabled="runTask?.status === 'running'" @click="runCommand(c)">
+                  <el-icon><VideoPlay /></el-icon>运行
+                </el-button>
+              </div>
+              <el-empty v-if="!runCommands.length" description="未识别到运行方式" :image-size="50" />
+            </div>
+            <div class="custom-add">
+              <el-input v-model="customCmd" size="small" placeholder="添加命令，如 ./run.sh" @keyup.enter="addCustomCommand" />
+              <el-button size="small" type="primary" plain @click="addCustomCommand">添加</el-button>
+            </div>
+            <div v-if="runLogs.length" ref="logBoxRef" class="log-box compact">
+              <pre>{{ runLogsText }}</pre>
+            </div>
+          </el-card>
 
           <el-card class="block">
             <template #header><b>最近运行记录</b></template>
-            <el-table v-if="history.length" :data="history" size="small" max-height="260">
-              <el-table-column prop="type" label="类型" width="80" />
+            <el-table v-if="history.length" :data="history" size="small" max-height="240">
+              <el-table-column prop="type" label="类型" width="70" />
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tag :type="statusType[row.status] || 'info'" size="small">{{ row.status }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="command" label="命令" show-overflow-tooltip />
-              <el-table-column label="日志" width="80">
+              <el-table-column label="日志" width="70">
                 <template #default="{ row }">
                   <el-button size="small" text type="primary" @click="viewLog(row.id)">查看</el-button>
                 </template>
@@ -751,195 +803,52 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.detail-view {
-  height: 100%;
-  overflow-y: auto;
-  padding: 20px;
-}
-.toolbar {
-  margin-bottom: 12px;
-}
-.head-card {
-  margin-bottom: 16px;
-}
-.head-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.name {
-  margin: 0;
-  white-space: nowrap;
-}
-.meta-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  flex-wrap: wrap;
-}
-.sep {
-  color: var(--el-border-color);
-}
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.hash {
-  color: var(--el-color-primary);
-  font-weight: 600;
-}
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  align-items: start;
-}
-.block {
-  margin-bottom: 16px;
-}
-.head-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-.progress-top {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 4px;
-}
-.progress-num {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--el-color-primary);
-  width: 64px;
-}
-.stage {
-  margin: 14px 0;
-}
-.remote-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  margin-bottom: 8px;
-}
-.remote-url {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.tip-line {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.tip-alert {
-  margin-bottom: 12px;
-}
-.recognize-btn {
-  margin-bottom: 4px;
-}
-.link-name {
-  margin-top: 10px;
-}
-.btn-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.branch-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.changes-list {
-  max-height: 180px;
-  overflow-y: auto;
-  margin-bottom: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.change-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.cmd-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.cmd-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-}
-.cmd-text {
-  flex: 1;
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-}
-.custom-add {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-.run-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--el-color-warning);
-  font-size: 12px;
-}
-.run-state .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--el-color-warning);
-  animation: blink 1.2s infinite;
-}
-@keyframes blink {
-  50% {
-    opacity: 0.2;
-  }
-}
-.log-box {
-  background: #0f172a;
-  color: #86efac;
-  border-radius: 6px;
-  padding: 10px;
-  max-height: 220px;
-  overflow-y: auto;
-  margin-top: 10px;
-}
-.log-box pre {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.time {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
+.detail-view { height: 100%; overflow-y: auto; padding: 20px 24px; }
+.toolbar { margin-bottom: 12px; }
+.head-card { margin-bottom: 16px; }
+.head-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.name { margin: 0; display: inline-flex; align-items: center; gap: 4px; cursor: text; }
+.edit-icon { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 6px; }
+.meta-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
+.sep { color: var(--el-border-color); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.hash { color: var(--el-color-primary); font-weight: 600; }
+.dim { color: var(--el-text-color-secondary); }
+.desc-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 16px; }
+.block { margin-bottom: 16px; }
+.head-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.progress-top { display: flex; align-items: center; gap: 16px; padding: 0 4px; }
+.progress-num { font-size: 24px; font-weight: 700; color: var(--el-color-primary); width: 64px; }
+.stage { margin: 14px 0; }
+.remote-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--el-border-color-light); border-radius: 6px; margin-bottom: 8px; }
+.remote-url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--el-text-color-secondary); }
+.link-name { margin-top: 10px; }
+.tip-line { font-size: 12px; color: var(--el-text-color-secondary); }
+.tip-alert { margin-bottom: 12px; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.branch-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.changes-list { max-height: 180px; overflow-y: auto; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
+.change-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid var(--el-border-color-light); border-radius: 6px; cursor: pointer; }
+.sub-title { font-weight: 600; margin: 10px 0 8px; color: var(--el-text-color-primary); }
+.cmd-list { display: flex; flex-direction: column; gap: 8px; }
+.cmd-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--el-border-color-light); border-radius: 6px; }
+.cmd-text { flex: 1; font-size: 12px; color: var(--el-text-color-regular); }
+.custom-add { display: flex; gap: 8px; margin-top: 10px; }
+.run-state { display: inline-flex; align-items: center; gap: 6px; color: var(--el-color-warning); font-size: 12px; }
+.run-state .dot, .run-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--el-color-warning); animation: blink 1.2s infinite; }
+@keyframes blink { 50% { opacity: 0.2; } }
+.run-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); font-size: 12px; font-weight: 600; }
+.run-badge .dot { background: var(--el-color-warning); animation: blink 1.2s infinite; }
+.run-badge.ext { color: var(--el-color-info); }
+.run-badge.ext .dot { background: var(--el-color-info); }
+.log-box { background: #0f172a; color: #86efac; border-radius: 6px; padding: 10px; max-height: 140px; overflow-y: auto; margin-top: 10px; }
+.log-box pre { margin: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.time { font-size: 12px; color: var(--el-text-color-secondary); }
+.task-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.task-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--el-border-color-light); border-radius: 6px; }
+.task-title { flex: 1; color: var(--el-text-color-regular); }
+.task-title.done { color: var(--el-text-color-secondary); text-decoration: line-through; }
+.task-summary { font-size: 12px; color: var(--el-text-color-secondary); }
 </style>

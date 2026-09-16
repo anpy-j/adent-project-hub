@@ -56,6 +56,17 @@ export interface GitBranch {
   current: boolean
 }
 
+export type TaskTag = 'bug' | 'feature' | 'chore'
+
+export interface TaskItem {
+  id: string
+  project_id: string
+  title: string
+  tag: TaskTag
+  done: number
+  created_at: string
+}
+
 export interface RunSuggestion {
   name: string
   cmd: string

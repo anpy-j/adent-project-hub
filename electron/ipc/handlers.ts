@@ -1,6 +1,6 @@
 import { ipcMain, shell, dialog, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
-import { workspaceRepo, projectRepo, remoteRepo } from '../db/repositories'
+import { workspaceRepo, projectRepo, remoteRepo, taskRepo } from '../db/repositories'
 import { detectProject } from '../services/detector.service'
 import { suggestCommands } from '../strategies/project-commands'
 import { runtimeService } from '../services/runtime.service'
@@ -9,6 +9,12 @@ import { runnerService, getMainWindowSender } from '../services/runner.service'
 import { gitSummary, readRemotes, detectPlatformOf, toWebUrl, gitLog, gitInit, gitSetRemote, gitCommitAll, gitCommitFiles, gitPushUpstream, gitPullSafe, gitPushSimple, gitBranches, gitCheckout } from '../services/git.service'
 import type { ProjectRemote } from '../../src/types'
 import { getDb } from '../db'
+
+function syncProgress(projectId: string): void {
+  const tasks = taskRepo.listByProject(projectId)
+  const percent = tasks.length === 0 ? 100 : Math.round((tasks.filter((t) => t.done).length / tasks.length) * 100)
+  projectRepo.update(projectId, { progress_percent: percent })
+}
 
 function getCustomCommands(projectId: string): string[] {
   try {
@@ -61,7 +67,7 @@ export function registerIpcHandlers(): void {
     return { ...project, git, history }
   })
   ipcMain.handle('project:detect', (_e, path: string) => detectProject(path))
-  ipcMain.handle('project:add', (_e, data: {
+  ipcMain.handle('project:add', async (_e, data: {
     workspace_id: string
     name: string
     path: string
@@ -79,18 +85,26 @@ export function registerIpcHandlers(): void {
       framework: data.framework ?? null,
       description: data.description ?? null
     })
+    let saved = inserted
     if (data.remotes?.length) {
-      remoteRepo.replaceAll(
-        inserted.id,
-        data.remotes.map((r) => ({
-          name: r.name,
-          url: r.url,
-          platform: (r.platform || detectPlatformOf(r.url)) as ProjectRemote['platform'],
-          is_default: r.is_default ?? 0
-        }))
-      )
+      const clean = data.remotes.map((r) => ({
+        name: r.name,
+        url: r.url,
+        platform: (r.platform || detectPlatformOf(r.url)) as ProjectRemote['platform'],
+        is_default: r.is_default ?? 0
+      }))
+      remoteRepo.replaceAll(inserted.id, clean)
+      try {
+        await gitInit(inserted.path)
+        for (const r of clean) {
+          await gitSetRemote(inserted.path, r.name, r.url)
+        }
+      } catch {
+        // git 不可用时不阻断添加，数据库中仍保留关联
+      }
+      saved = projectRepo.get(inserted.id) ?? inserted
     }
-    return projectRepo.get(inserted.id)
+    return saved
   })
   ipcMain.handle('project:update', (_e, id: string, data: Record<string, unknown>) =>
     projectRepo.update(id, data)
@@ -163,6 +177,27 @@ export function registerIpcHandlers(): void {
     ).run({ id, cmds: JSON.stringify(cmds) })
     return getCustomCommands(id)
   })
+  // ---- 任务（驱动开发进度） ----
+  ipcMain.handle('task:list', (_e, projectId: string) => taskRepo.listByProject(projectId))
+  ipcMain.handle('task:add', (_e, projectId: string, title: string, tag: string) => {
+    const project = projectRepo.get(projectId)
+    if (!project) throw new Error('项目不存在')
+    if (!title?.trim()) throw new Error('请填写任务标题')
+    const task = taskRepo.add(projectId, title.trim(), tag || 'chore')
+    syncProgress(projectId)
+    return taskRepo.listByProject(projectId)
+  })
+  ipcMain.handle('task:toggle', (_e, taskId: string) => {
+    const t = taskRepo.toggle(taskId)
+    if (t) syncProgress(t.project_id)
+    return t
+  })
+  ipcMain.handle('task:remove', (_e, taskId: string) => {
+    const row = getDb().prepare('SELECT project_id FROM task WHERE id = ?').get(taskId) as { project_id: string } | undefined
+    taskRepo.remove(taskId)
+    if (row) syncProgress(row.project_id)
+    return true
+  })
   ipcMain.handle('git:log', (_e, id: string, count?: number) => {
     const project = projectRepo.get(id)
     if (!project) throw new Error('项目不存在')
@@ -181,6 +216,11 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle('runner:stop', (_e, taskId: string) => runnerService.stop(taskId))
   ipcMain.handle('runner:listRunning', () => runnerService.listRunning())
+  ipcMain.handle('runner:probeExternal', (_e, projectId: string) => {
+    const project = projectRepo.get(projectId)
+    if (!project) throw new Error('项目不存在')
+    return runnerService.probeExternal(project.path)
+  })
   ipcMain.handle('runner:startCustom', (_e, projectId: string, cmd: { bin: string; args: string[]; display?: string }) => {
     const sender = getMainWindowSender()
     if (!sender) throw new Error('没有可用窗口')

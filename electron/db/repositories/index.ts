@@ -1,6 +1,7 @@
+import { randomUUID as uuid } from 'crypto'
 import { getDb } from '../index'
 import { randomUUID } from 'crypto'
-import type { Project, ProjectRemote, Workspace } from '../../../src/types'
+import type { Project, ProjectRemote, TaskItem, Workspace } from '../../../src/types'
 
 function parseTags(tags: string | null): string[] | null {
   if (!tags) return null
@@ -132,5 +133,27 @@ export const projectRepo = {
 
   remove(id: string): void {
     getDb().prepare('DELETE FROM project WHERE id = ?').run(id)
+  }
+}
+
+export const taskRepo = {
+  listByProject(projectId: string): TaskItem[] {
+    return getDb()
+      .prepare('SELECT * FROM task WHERE project_id = ? ORDER BY done ASC, created_at DESC')
+      .all(projectId) as TaskItem[]
+  },
+  add(projectId: string, title: string, tag: string): TaskItem {
+    const db = getDb()
+    db.prepare('INSERT INTO task (id, project_id, title, tag) VALUES (?, ?, ?, ?)').run(
+      uuid(), projectId, title, tag
+    )
+    return this.listByProject(projectId)[0]
+  },
+  toggle(id: string): TaskItem | null {
+    getDb().prepare('UPDATE task SET done = 1 - done WHERE id = ?').run(id)
+    return (getDb().prepare('SELECT * FROM task WHERE id = ?').get(id) as TaskItem | undefined) ?? null
+  },
+  remove(id: string): void {
+    getDb().prepare('DELETE FROM task WHERE id = ?').run(id)
   }
 }
