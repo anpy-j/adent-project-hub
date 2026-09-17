@@ -11,7 +11,12 @@ import type {
   RunSuggestion,
   LogChunk,
   ProjectType,
-  TaskStat
+  TaskStat,
+  ServiceItem,
+  ServiceCandidate,
+  ServiceLogChunk,
+  ServiceStatusInfo,
+  ServiceAnomaly
 } from '@/types'
 
 export interface ProjectHubAPI {
@@ -79,6 +84,32 @@ export interface ProjectHubAPI {
   task: {
     history: (projectId: string, type?: string) => Promise<TaskHistory[]>
     readLog: (taskId: string) => Promise<string>
+  }
+  service: {
+    list: () => Promise<ServiceItem[]>
+    add: (data: {
+      name: string
+      group_name?: string | null
+      command: string
+      cwd?: string | null
+      port?: number | null
+      autostart?: boolean
+      description?: string | null
+    }) => Promise<ServiceItem>
+    update: (id: string, data: Partial<ServiceItem>) => Promise<ServiceItem>
+    remove: (id: string) => Promise<void>
+    start: (id: string) => Promise<string>
+    stop: (id: string) => Promise<void>
+    restart: (id: string) => Promise<string>
+    probe: (id: string) => Promise<ServiceStatusInfo>
+    probeAll: () => Promise<Array<ServiceItem & { status: ServiceStatusInfo }>>
+    readLog: (id: string) => Promise<string>
+    clearLog: (id: string) => Promise<void>
+    importScan: () => Promise<ServiceCandidate[]>
+    import: (candidates: ServiceCandidate[]) => Promise<number>
+    onLog: (callback: (chunk: ServiceLogChunk) => void) => () => void
+    onStatus: (callback: (info: ServiceStatusInfo) => void) => () => void
+    onAnomaly: (callback: (anomaly: ServiceAnomaly) => void) => () => void
   }
   system: {
     openPath: (path: string) => Promise<void>

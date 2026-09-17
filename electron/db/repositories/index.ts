@@ -1,7 +1,7 @@
 import { randomUUID as uuid } from 'crypto'
 import { getDb } from '../index'
 import { randomUUID } from 'crypto'
-import type { Project, ProjectRemote, TaskItem, Workspace } from '../../../src/types'
+import type { Project, ProjectRemote, TaskItem, Workspace, ServiceItem } from '../../../src/types'
 
 function parseTags(tags: string | null): string[] | null {
   if (!tags) return null
@@ -192,5 +192,54 @@ export const taskRepo = {
   },
   remove(id: string): void {
     getDb().prepare('DELETE FROM task WHERE id = ?').run(id)
+  }
+}
+
+export const serviceRepo = {
+  list(): ServiceItem[] {
+    return getDb()
+      .prepare('SELECT * FROM service ORDER BY group_name ASC, name ASC')
+      .all() as ServiceItem[]
+  },
+  get(id: string): ServiceItem | null {
+    const row = getDb()
+      .prepare('SELECT * FROM service WHERE id = ?')
+      .get(id) as ServiceItem | undefined
+    return row ?? null
+  },
+  findByNativeId(source: string, nativeId: string): ServiceItem | null {
+    const row = getDb()
+      .prepare('SELECT * FROM service WHERE source = ? AND native_id = ?')
+      .get(source, nativeId) as ServiceItem | undefined
+    return row ?? null
+  },
+  insert(data: Omit<ServiceItem, 'created_at' | 'updated_at'>): ServiceItem {
+    getDb()
+      .prepare(
+        `INSERT INTO service (id, name, group_name, command, cwd, port, autostart, source, native_id, description)
+         VALUES (@id, @name, @group_name, @command, @cwd, @port, @autostart, @source, @native_id, @description)`
+      )
+      .run(data)
+    return this.get(data.id) as ServiceItem
+  },
+  update(id: string, data: Partial<ServiceItem>): ServiceItem {
+    const allowed: (keyof ServiceItem)[] = [
+      'name', 'group_name', 'command', 'cwd', 'port', 'autostart', 'description', 'last_status', 'last_started_at'
+    ]
+    const sets: string[] = []
+    const values: Record<string, unknown> = { id }
+    for (const key of allowed) {
+      if (key in data) {
+        sets.push(`${key} = @${key}`)
+        values[key] = data[key]
+      }
+    }
+    if (!sets.length) return this.get(id) as ServiceItem
+    sets.push(`updated_at = datetime('now')`)
+    getDb().prepare(`UPDATE service SET ${sets.join(', ')} WHERE id = @id`).run(values)
+    return this.get(id) as ServiceItem
+  },
+  remove(id: string): void {
+    getDb().prepare('DELETE FROM service WHERE id = ?').run(id)
   }
 }

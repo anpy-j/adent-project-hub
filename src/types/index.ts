@@ -158,3 +158,57 @@ export interface LogChunk {
   data: string
   timestamp: number
 }
+
+// ---- 本机服务管理 ----
+export type ServiceSource = 'manual' | 'launchd' | 'schtasks'
+export type ServiceRunStatus = 'running' | 'stopped' | 'abnormal'
+
+export interface ServiceItem {
+  id: string
+  name: string
+  group_name: string | null
+  command: string
+  cwd: string | null
+  port: number | null
+  autostart: number
+  source: ServiceSource
+  native_id: string | null
+  description: string | null
+  last_status: ServiceRunStatus | null
+  last_started_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ServiceStatusInfo {
+  serviceId: string
+  status: ServiceRunStatus
+  pid: number | null
+  detail: string
+}
+
+export interface ServiceCandidate {
+  key: string
+  name: string
+  command: string
+  cwd: string | null
+  nativeId: string
+  source: Exclude<ServiceSource, 'manual'>
+  autostart: boolean
+  alreadyImported: boolean
+}
+
+export interface ServiceLogChunk {
+  serviceId: string
+  runId: string
+  stream: 'stdout' | 'stderr'
+  data: string
+  timestamp: number
+}
+
+export interface ServiceAnomaly {
+  serviceId: string
+  serviceName: string
+  exitCode: number | null
+  message: string
+}

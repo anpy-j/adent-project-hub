@@ -5,6 +5,7 @@ import { getDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc/handlers'
 import { runnerService } from './services/runner.service'
 import { runtimeService } from './services/runtime.service'
+import { serviceManager } from './services/service-manager.service'
 
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -51,6 +52,7 @@ app.whenReady().then(() => {
   getDb()
   registerIpcHandlers()
   runtimeService.scan()
+  serviceManager.autostart()
 
   createWindow()
 
@@ -61,6 +63,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   runnerService.cleanupAll()
+  serviceManager.cleanupAll()
   closeDb()
 })
 

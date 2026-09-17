@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ProjectHubAPI } from '../src/api/ipc'
-import type { LogChunk, TaskHistory } from '../src/types'
+import type { LogChunk, TaskHistory, ServiceLogChunk, ServiceStatusInfo, ServiceAnomaly } from '../src/types'
 
 function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
   const plainArgs = args.map((a) => JSON.parse(JSON.stringify(a)))
@@ -76,6 +76,36 @@ const api: ProjectHubAPI = {
   task: {
     history: (projectId: string, type?: string) => invoke('task:history', projectId, type),
     readLog: (taskId: string) => invoke('task:readLog', taskId)
+  },
+  service: {
+    list: () => invoke('service:list'),
+    add: (data) => invoke('service:add', data),
+    update: (id, data) => invoke('service:update', id, data),
+    remove: (id: string) => invoke('service:remove', id),
+    start: (id: string) => invoke('service:start', id),
+    stop: (id: string) => invoke('service:stop', id),
+    restart: (id: string) => invoke('service:restart', id),
+    probe: (id: string) => invoke('service:probe', id),
+    probeAll: () => invoke('service:probeAll'),
+    readLog: (id: string) => invoke('service:readLog', id),
+    clearLog: (id: string) => invoke('service:clearLog', id),
+    importScan: () => invoke('service:importScan'),
+    import: (candidates) => invoke('service:import', candidates),
+    onLog: (callback) => {
+      const handler = (_e: unknown, chunk: ServiceLogChunk) => callback(chunk)
+      ipcRenderer.on('service:log', handler)
+      return () => ipcRenderer.removeListener('service:log', handler)
+    },
+    onStatus: (callback) => {
+      const handler = (_e: unknown, info: ServiceStatusInfo) => callback(info)
+      ipcRenderer.on('service:status', handler)
+      return () => ipcRenderer.removeListener('service:status', handler)
+    },
+    onAnomaly: (callback) => {
+      const handler = (_e: unknown, anomaly: ServiceAnomaly) => callback(anomaly)
+      ipcRenderer.on('service:anomaly', handler)
+      return () => ipcRenderer.removeListener('service:anomaly', handler)
+    }
   },
   system: {
     openPath: (path: string) => invoke('system:openPath', path),

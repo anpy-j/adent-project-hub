@@ -5,9 +5,10 @@ import { detectProject } from '../services/detector.service'
 import { suggestCommands } from '../strategies/project-commands'
 import { runtimeService } from '../services/runtime.service'
 import { runnerService, getMainWindowSender } from '../services/runner.service'
+import { serviceManager } from '../services/service-manager.service'
 
 import { gitSummary, readRemotes, detectPlatformOf, toWebUrl, gitLog, gitInit, gitSetRemote, gitCommitAll, gitCommitFiles, gitPushUpstream, gitPullSafe, gitPushSimple, gitBranches, gitCheckout } from '../services/git.service'
-import type { Project, ProjectRemote } from '../../src/types'
+import type { Project, ProjectRemote, ServiceCandidate } from '../../src/types'
 import { getDb } from '../db'
 
 const STAGE_RANK: Record<string, number> = { planning: 0, developing: 1, testing: 2, released: 3 }
@@ -276,6 +277,22 @@ export function registerIpcHandlers(): void {
     if (!sender) throw new Error('没有可用窗口')
     return runnerService.startCustom(projectId, cmd, sender)
   })
+
+  // ---- 本机服务管理 ----
+  ipcMain.handle('service:list', () => serviceManager.list())
+  ipcMain.handle('service:add', (_e, data: Parameters<typeof serviceManager.add>[0]) => serviceManager.add(data))
+  ipcMain.handle('service:update', (_e, id: string, data: Record<string, unknown>) => serviceManager.update(id, data))
+  ipcMain.handle('service:remove', (_e, id: string) => serviceManager.remove(id))
+  ipcMain.handle('service:start', (_e, id: string) => serviceManager.start(id))
+  ipcMain.handle('service:stop', (_e, id: string) => serviceManager.stop(id))
+  ipcMain.handle('service:restart', (_e, id: string) => serviceManager.restart(id))
+  ipcMain.handle('service:probe', (_e, id: string) => serviceManager.probe(id))
+  ipcMain.handle('service:probeAll', () => serviceManager.probeAll())
+  ipcMain.handle('service:readLog', (_e, id: string) => serviceManager.readLog(id))
+  ipcMain.handle('service:clearLog', (_e, id: string) => serviceManager.clearLog(id))
+  ipcMain.handle('service:listRunning', () => serviceManager.listRunning())
+  ipcMain.handle('service:importScan', () => serviceManager.importScan())
+  ipcMain.handle('service:import', (_e, candidates: ServiceCandidate[]) => serviceManager.importSelected(candidates))
 
   // ---- task ----
   ipcMain.handle('task:history', (_e, projectId: string, type?: string) => {
