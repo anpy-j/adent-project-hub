@@ -39,12 +39,29 @@ const aiTestResult = ref('')
 const modelOptions = ref<string[]>([])
 const modelsLoading = ref(false)
 const aiConfigured = ref(false)
+// 保存后回显的当前生效配置
+const savedSummary = ref('')
+const savedTagType = ref<'success' | 'warning'>('warning')
 
 const currentProvider = ref<AiProviderOption | null>(null)
 
 function applyProviderPreset(p: AiProviderOption | null) {
   currentProvider.value = p
   if (p && p.baseUrl) aiForm.value.base_url = p.baseUrl
+}
+
+function providerLabelOf(value: string): string {
+  return providers.value.find((p) => p.value === value)?.label || value
+}
+
+function refreshSaved(cfg: AiConfig) {
+  const label = providerLabelOf(cfg.provider)
+  const model = cfg.model || '（未选模型）'
+  const ok = !!(cfg.model && (cfg.provider === 'opencode' || cfg.base_url))
+  aiConfigured.value = ok
+  savedSummary.value = ok
+    ? `${label} · ${model}` + (cfg.provider === 'opencode' ? '' : ` · ${cfg.base_url}`)
+    : ''
 }
 
 async function loadAi() {
@@ -54,7 +71,11 @@ async function loadAi() {
     const cfg = await window.api.ai.getConfig()
     aiForm.value = { ...cfg }
     applyProviderPreset(providers.value.find((p) => p.value === cfg.provider) || null)
-    aiConfigured.value = !!(cfg.base_url && cfg.model)
+    refreshSaved(cfg)
+    // 自动拉取模型列表，让下拉框直接显示可用模型
+    if (cfg.provider === 'opencode' || cfg.base_url) {
+      fetchModels(true)
+    }
   } finally {
     aiLoading.value = false
   }
@@ -65,6 +86,12 @@ watch(
   (val) => {
     const p = providers.value.find((x) => x.value === val)
     if (p) applyProviderPreset(p)
+    // 切换厂商后自动刷新模型列表
+    if (val === 'opencode') {
+      fetchModels(true)
+    } else if (aiForm.value.base_url) {
+      fetchModels(true)
+    }
   }
 )
 
@@ -74,7 +101,7 @@ async function saveAi() {
     // 关键：contextBridge 无法克隆响应式代理，先转纯对象
     const saved = await window.api.ai.saveConfig(JSON.parse(JSON.stringify(aiForm.value)))
     aiForm.value = { ...saved }
-    aiConfigured.value = !!(saved.base_url && saved.model)
+    refreshSaved(saved)
     ElMessage.success('AI 配置已保存')
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -83,15 +110,15 @@ async function saveAi() {
   }
 }
 
-async function fetchModels() {
+async function fetchModels(silent = false) {
   modelsLoading.value = true
   try {
     // 用当前表单值（未保存也允许拉取）
     const list = await window.api.ai.listModels(JSON.parse(JSON.stringify(aiForm.value)))
     modelOptions.value = list
-    ElMessage.success(`获取到 ${list.length} 个模型`)
+    if (!silent) ElMessage.success(`获取到 ${list.length} 个模型`)
   } catch (e) {
-    ElMessage.error((e as Error).message)
+    if (!silent) ElMessage.error((e as Error).message)
   } finally {
     modelsLoading.value = false
   }
@@ -130,16 +157,24 @@ onMounted(() => {
           <span>
             AI 设置（服务发现 Agent）
             <el-tag :type="aiConfigured ? 'success' : 'info'" size="small" style="margin-left: 8px">
-              {{ aiConfigured ? '已配置' : '未配置' }}
+              {{ savedSummary ? `已连接：${savedSummary}` : '未配置' }}
             </el-tag>
           </span>
           <span class="card-head-actions">
-            <el-button size="small" :loading="modelsLoading" @click="fetchModels">获取模型列表</el-button>
+            <el-button size="small" :loading="modelsLoading" @click="fetchModels()">刷新模型列表</el-button>
             <el-button size="small" :loading="aiTesting" @click="testAi">测试连接</el-button>
             <el-button type="primary" size="small" :loading="aiSaving" @click="saveAi">保存</el-button>
           </span>
         </div>
       </template>
+      <el-alert
+        v-if="savedSummary"
+        :title="`当前生效配置：${savedSummary}`"
+        type="success"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 14px"
+      />
       <el-form label-width="100px" label-position="right">
         <el-form-item label="厂商">
           <el-select v-model="aiForm.provider" style="width: 280px">
@@ -148,7 +183,12 @@ onMounted(() => {
           <span class="form-tip">{{ currentProvider?.hint }}</span>
         </el-form-item>
         <el-form-item label="Base URL">
-          <el-input v-model="aiForm.base_url" placeholder="http://localhost:11434/v1" style="width: 420px" />
+          <el-input
+            v-model="aiForm.base_url"
+            :disabled="aiForm.provider === 'opencode'"
+            :placeholder="aiForm.provider === 'opencode' ? 'OpenCode 走本机 CLI，无需填写' : 'http://localhost:11434/v1'"
+            style="width: 420px"
+          />
         </el-form-item>
         <el-form-item label="API Key">
           <el-input

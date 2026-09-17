@@ -1,5 +1,9 @@
-import { execFile } from 'child_process'
-import type { AiConfig, AiProviderOption, ServiceCandidate, ServiceItem } from '../../src/types'
+import { execFile, spawn } from 'child_process'
+import { homedir, tmpdir } from 'os'
+import { join } from 'path'
+import { randomUUID } from 'crypto'
+import { openSync, readFileSync, unlinkSync, closeSync } from 'fs'
+import type { AiConfig, AiProviderOption, ServiceCandidate } from '../../src/types'
 import { aiConfigRepo } from '../db/repositories'
 
 export const AI_PROVIDERS: AiProviderOption[] = [
@@ -9,6 +13,13 @@ export const AI_PROVIDERS: AiProviderOption[] = [
     baseUrl: 'http://localhost:11434/v1',
     needKey: false,
     hint: '本机 Ollama，无需 API Key，先执行 ollama serve 启动服务'
+  },
+  {
+    value: 'opencode',
+    label: 'OpenCode（本机 CLI）',
+    baseUrl: '',
+    needKey: false,
+    hint: '连接本机 opencode CLI：模型列表来自 opencode models，对话走 opencode run，直接复用 opencode 已配置的模型与鉴权'
   },
   {
     value: 'deepseek',
@@ -40,15 +51,67 @@ export const AI_PROVIDERS: AiProviderOption[] = [
   }
 ]
 
-interface ChatMsg {
-  role: 'system' | 'user'
-  content: string
-}
-
 function headers(cfg: AiConfig): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
   if (cfg.api_key) h.Authorization = `Bearer ${cfg.api_key}`
   return h
+}
+
+// OpenCode 走本机 CLI（复用 opencode 已配置的模型与鉴权），无需常驻服务。
+// --pure 跳过项目插件/MCP，避免对话被无关插件拖慢。
+// 注意：bun 运行时在 node 管道子进程场景下可能挂起，因此输出重定向到临时文件再读取
+function execOpencode(args: string[]): Promise<string> {
+  const run = (bin: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const outPath = join(tmpdir(), `ph-opencode-${randomUUID()}.log`)
+      let out: number
+      try {
+        out = openSync(outPath, 'w')
+      } catch (e) {
+        reject(new Error(`无法创建 opencode 输出文件：${(e as Error).message}`))
+        return
+      }
+      const child = spawn(bin, args, { stdio: ['ignore', out, out] })
+      const timer = setTimeout(() => child.kill('SIGKILL'), 120000)
+      child.on('error', (err) => {
+        clearTimeout(timer)
+        closeSync(out)
+        reject(new Error(err.message.slice(0, 300)))
+      })
+      child.on('exit', (code, signal) => {
+        clearTimeout(timer)
+        closeSync(out)
+        let text = ''
+        try {
+          text = readFileSync(outPath, 'utf-8')
+        } catch {
+          // ignore
+        }
+        try {
+          unlinkSync(outPath)
+        } catch {
+          // ignore
+        }
+        if (signal) {
+          reject(new Error('opencode 执行超时（120s）'))
+        } else if (code !== 0) {
+          reject(new Error(text.trim().slice(0, 300) || `opencode 退出码 ${code}`))
+        } else {
+          resolve(text)
+        }
+      })
+    })
+  return run('opencode').catch((e1: Error) => {
+    const fallback = join(homedir(), '.opencode', 'bin', 'opencode')
+    return run(fallback).catch(() => {
+      throw e1
+    })
+  })
+}
+
+interface ChatMsg {
+  role: 'system' | 'user'
+  content: string
 }
 
 function withTimeout(ms: number): { signal: AbortSignal; done: () => void } {
@@ -70,7 +133,7 @@ export class AiService {
     if (!data.model?.trim()) throw new Error('请填写模型名称')
     const provider = AI_PROVIDERS.find((p) => p.value === data.provider)
     const baseUrl = (data.base_url || provider?.baseUrl || '').trim()
-    if (!baseUrl) throw new Error('请填写 Base URL')
+    if (!baseUrl && data.provider !== 'opencode') throw new Error('请填写 Base URL')
     return aiConfigRepo.save({
       provider: data.provider,
       base_url: baseUrl.replace(/\/+$/, ''),
@@ -87,11 +150,21 @@ export class AiService {
 
   private hasAi(cfg?: AiConfig): boolean {
     const c = cfg ?? aiConfigRepo.get()
+    if (c.provider === 'opencode') return !!c.model
     return !!(this.effectiveBase(c) && c.model)
   }
 
   async listModels(cfg?: AiConfig): Promise<string[]> {
     const c = cfg ?? aiConfigRepo.get()
+    if (c.provider === 'opencode') {
+      const out = await execOpencode(['models'])
+      const ids = out
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && /^[a-z0-9_.-]+\/[a-z0-9_.-]+/i.test(l))
+      if (!ids.length) throw new Error('opencode models 未返回可用模型')
+      return ids
+    }
     const base = this.effectiveBase(c)
     if (!base) throw new Error('请先填写 Base URL')
     const t = withTimeout(15000)
@@ -124,10 +197,33 @@ export class AiService {
     return reply.slice(0, 100)
   }
 
+  private async chatViaOpencode(messages: ChatMsg[], model: string): Promise<string> {
+    const prompt = messages
+      .map((m) => (m.role === 'system' ? `[系统要求]\n${m.content}` : m.content))
+      .join('\n\n')
+    const raw = await execOpencode(['run', '--pure', '-m', model, prompt])    // 去掉 CLI 输出中的 ANSI 颜色与装饰行，保留正文
+    const text = raw
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .split('\n')
+      .filter((l) => !l.startsWith('> ') && l.trim() !== '')
+      .join('\n')
+      .trim()
+    if (!text) throw new Error('opencode 未返回内容')
+    return text
+  }
+
   async chat(messages: ChatMsg[], cfg?: AiConfig): Promise<string> {
     const c = cfg ?? aiConfigRepo.get()
+    if (!c.model) throw new Error('未配置 AI（请在设置中选择厂商并填写模型）')
+    if (c.provider === 'opencode') {
+      try {
+        return await this.chatViaOpencode(messages, c.model)
+      } catch (e) {
+        throw new Error(`AI 请求失败：${(e as Error).message}`)
+      }
+    }
     const base = this.effectiveBase(c)
-    if (!base || !c.model) throw new Error('未配置 AI（请在设置中选择厂商并填写模型）')
+    if (!base) throw new Error('未配置 AI（请在设置中选择厂商并填写模型）')
     const t = withTimeout(60000)
     try {
       const res = await fetch(`${base}/chat/completions`, {
@@ -209,4 +305,3 @@ export class AiService {
 }
 
 export const aiService = new AiService()
-export type { ServiceItem }
