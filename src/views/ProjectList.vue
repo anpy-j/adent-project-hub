@@ -156,17 +156,14 @@ function platformLabel(p: Project): string {
   return r === 'github' ? 'GitHub' : r === 'gitee' ? 'Gitee' : r === 'gitlab' ? 'GitLab' : r ? 'Git' : '仅本地'
 }
 
-/** 英文项目名：优先取远程仓库名，其次目录名；与项目名相同则不再重复展示 */
+/** 英文项目名：优先取目录名，其次远程仓库名；与项目名相同则不再重复展示 */
 function englishName(p: Project): string {
-  const url = (p.remotes || [])[0]?.url || ''
-  let en = ''
-  const ssh = url.match(/^git@[^:]+:.+?\/([^/]+?)(\.git)?$/)
-  const http = url.match(/\/([^/]+?)(\.git)?$/)
-  if (ssh) en = ssh[1]
-  else if (http) en = http[1]
+  const segs = p.path.split('/').filter(Boolean)
+  let en = segs[segs.length - 1] || ''
   if (!en) {
-    const segs = p.path.split('/').filter(Boolean)
-    en = segs[segs.length - 1] || ''
+    const url = (p.remotes || [])[0]?.url || ''
+    const m = url.match(/\/([^/]+?)(\.git)?$/)
+    if (m) en = m[1]
   }
   if (!en || en.toLowerCase() === p.name.toLowerCase()) return ''
   return en
