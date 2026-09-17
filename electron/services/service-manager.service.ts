@@ -1,12 +1,14 @@
 import { spawn, execFile } from 'child_process'
 import type { ChildProcess } from 'child_process'
 import { app } from 'electron'
+import { homedir, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { mkdirSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync, writeFileSync, readdirSync } from 'fs'
-import type { ServiceItem, ServiceStatusInfo, ServiceCandidate, ServiceLogChunk, ServiceAnomaly } from '../../src/types'
+import type { ServiceItem, ServiceStatusInfo, ServiceCandidate, ServiceLogChunk, ServiceAnomaly, AgentSearchResult } from '../../src/types'
 import { serviceRepo } from '../db/repositories'
 import { getMainWindowSender } from './runner.service'
+import { aiService } from './ai.service'
 
 interface RunningService {
   process: ChildProcess
@@ -22,6 +24,7 @@ class ServiceManagerService {
   private running = new Map<string, RunningService>()
   private stopping = new Set<string>()
   private exitWaiters = new Map<string, Array<() => void>>()
+  private recentOutput = new Map<string, string>()
 
   list(): ServiceItem[] {
     return serviceRepo.list()
@@ -101,6 +104,9 @@ class ServiceManagerService {
       const chunk: ServiceLogChunk = { serviceId, runId, stream, data, timestamp: Date.now() }
       this.send('service:log', chunk)
       appendFileSync(logPath, data)
+      // 记录最近输出用于异常归因（上限 8KB）
+      const buf = (this.recentOutput.get(serviceId) || '') + data
+      this.recentOutput.set(serviceId, buf.length > 8192 ? buf.slice(-8192) : buf)
     }
 
     child.stdout?.on('data', (d: Buffer) => emit('stdout', d.toString()))
@@ -127,13 +133,18 @@ class ServiceManagerService {
       })
 
       if (status === 'abnormal') {
+        const name = entry?.service.name ?? svc.name
+        const hint = this.diagnoseExit(this.recentOutput.get(serviceId) || '')
+        this.recentOutput.delete(serviceId)
         const anomaly: ServiceAnomaly = {
           serviceId,
-          serviceName: entry?.service.name ?? svc.name,
+          serviceName: name,
           exitCode: code,
-          message: `服务「${entry?.service.name ?? svc.name}」异常退出（退出码 ${code ?? '-'}）`
+          message: `服务「${name}」异常退出（退出码 ${code ?? '-'}）${hint ? `。${hint}` : ''}`
         }
         this.send('service:anomaly', anomaly)
+      } else {
+        this.recentOutput.delete(serviceId)
       }
 
       this.resolveExitWaiters(serviceId)
@@ -271,11 +282,16 @@ class ServiceManagerService {
     }
   }
 
-  // ---- 系统服务导入（launchd / 任务计划） ----
+  // ---- 系统服务导入（launchd / 任务计划 / PATH CLI） ----
   async importScan(): Promise<ServiceCandidate[]> {
-    if (process.platform === 'darwin') return this.scanLaunchAgents()
-    if (process.platform === 'win32') return this.scanScheduledTasks()
-    return []
+    let base: ServiceCandidate[] = []
+    if (process.platform === 'darwin') {
+      base = await this.scanLaunchAgents()
+    } else if (process.platform === 'win32') {
+      base = await this.scanScheduledTasks()
+    }
+    const cli = await this.scanPathBins()
+    return [...base, ...cli]
   }
 
   importSelected(candidates: ServiceCandidate[]): number {
@@ -284,17 +300,168 @@ class ServiceManagerService {
       if (serviceRepo.findByNativeId(c.source, c.nativeId)) continue
       this.add({
         name: c.name,
-        group_name: '系统导入',
+        group_name: c.source === 'cli' ? 'CLI' : c.source === 'agent' ? 'AI 发现' : '系统导入',
         command: c.command,
         cwd: c.cwd,
+        port: c.port ?? null,
         autostart: c.autostart,
-        description: `从${c.source === 'launchd' ? ' launchd' : ' Windows 任务计划'}导入：${c.nativeId}`,
+        description: c.description ?? (c.source === 'cli' ? `PATH 命令：${c.nativeId}` : c.source === 'agent' ? `AI Agent 发现：${c.nativeId}` : undefined),
         source: c.source,
         native_id: c.nativeId
       })
       count++
     }
     return count
+  }
+
+  // 扫描 PATH 中的可执行命令（codex、antigravity 等 CLI 工具）
+  async scanPathBins(): Promise<ServiceCandidate[]> {
+    const home = app.getPath('home')
+    const dirSet = new Set<string>()
+    for (const d of (process.env.PATH || '').split(':')) {
+      if (d && !d.startsWith(tmpdir()) && !d.includes('/snap/')) dirSet.add(d)
+    }
+    dirSet.add(join(home, '.local', 'bin'))
+    dirSet.add(join(home, 'Library', 'pnpm'))
+    const pnpmBin = await new Promise<string>((resolve) => {
+      execFile('pnpm', ['bin', '-g'], { timeout: 5000 }, (err, stdout) => resolve(err ? '' : String(stdout || '').trim()))
+    })
+    if (pnpmBin) dirSet.add(pnpmBin)
+
+    const seen = new Set<string>()
+    const out: ServiceCandidate[] = []
+    for (const dir of dirSet) {
+      let files: string[] = []
+      try {
+        if (!statSync(dir).isDirectory()) continue
+        files = readdirSync(dir)
+      } catch {
+        continue
+      }
+      for (const f of files) {
+        if (f.startsWith('.') || f.includes(' ') || out.length >= 400) continue
+        const full = join(dir, f)
+        try {
+          const st = statSync(full)
+          if (!st.isFile() || !(st.mode & 0o111)) continue
+        } catch {
+          continue
+        }
+        if (seen.has(f)) continue
+        seen.add(f)
+        const nativeId = `cli:${f}`
+        out.push({
+          key: `cli:${full}`,
+          name: f,
+          command: f,
+          cwd: null,
+          port: null,
+          nativeId,
+          source: 'cli',
+          autostart: false,
+          alreadyImported: !!serviceRepo.findByNativeId('cli', nativeId),
+          description: `PATH 命令（${dir}）`
+        })
+      }
+    }
+    return out
+  }
+
+  // AI Agent 搜索：先做本机确定性发现，再交给 AI 提炼为可导入的服务定义
+  async agentSearch(query: string): Promise<AgentSearchResult> {
+    const q = (query || '').trim()
+    if (!q) throw new Error('请输入要搜索的服务名')
+    const { facts, candidates } = await this.discover(q)
+
+    if (!aiService.isConfigured()) {
+      return {
+        query: q,
+        usedAi: false,
+        notice: '未配置 AI（设置 → AI 设置），以下为本机直接发现的结果',
+        candidates
+      }
+    }
+    let aiCandidates: ServiceCandidate[] = []
+    let notice = ''
+    try {
+      const reply = await aiService.chat(aiService.buildSearchPrompt(q, facts))
+      aiCandidates = aiService.parseCandidates(reply, q)
+      if (!aiCandidates.length) notice = 'AI 未返回可用的服务定义，以下为本机直接发现的结果'
+    } catch (e) {
+      notice = `AI 调用失败（${(e as Error).message}），以下为本机直接发现的结果`
+    }
+
+    // 合并去重：AI 结果在前，确定性结果在后（按 name+command 去重）
+    const merged: ServiceCandidate[] = []
+    const seen = new Set<string>()
+    for (const c of [...aiCandidates, ...candidates]) {
+      const sig = `${c.name}|${c.command}`
+      if (seen.has(sig)) continue
+      seen.add(sig)
+      merged.push(c)
+    }
+    return { query: q, usedAi: aiCandidates.length > 0, notice, candidates: merged }
+  }
+
+  // 本机确定性发现：PATH 命令、launchd、运行中进程
+  private async discover(query: string): Promise<{ facts: string; candidates: ServiceCandidate[] }> {
+    const facts: string[] = []
+    const candidates: ServiceCandidate[] = []
+
+    // 1. which 查找可执行文件
+    const binPath = await new Promise<string>((resolve) => {
+      execFile('which', [query], { timeout: 5000 }, (err, stdout) => resolve(err ? '' : String(stdout || '').trim()))
+    })
+    if (binPath) {
+      facts.push(`命令 ${query} 位于 ${binPath}`)
+      const nativeId = `cli:${query}`
+      candidates.push({
+        key: `discover:which:${query}`,
+        name: query,
+        command: query,
+        cwd: null,
+        port: null,
+        nativeId,
+        source: 'cli',
+        autostart: false,
+        alreadyImported: !!serviceRepo.findByNativeId('cli', nativeId),
+        description: `本机命令（${binPath}）`
+      })
+    }
+
+    // 2. launchd / CLI 扫描中匹配
+    try {
+      const [agents, clis] = await Promise.all([this.scanLaunchAgents(), this.scanPathBins()])
+      const kw = query.toLowerCase()
+      for (const c of [...agents, ...clis]) {
+        if (c.name.toLowerCase().includes(kw) || c.command.toLowerCase().includes(kw)) {
+          candidates.push({ ...c, key: `discover:${c.key}` })
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3. 运行中的进程
+    const psOut = await new Promise<string>((resolve) => {
+      execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 8 * 1024 * 1024, timeout: 10000 }, (err, stdout) =>
+        resolve(err ? '' : String(stdout || ''))
+      )
+    })
+    const kw = query.toLowerCase()
+    const procLines = psOut
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && l.toLowerCase().includes(kw) && !l.includes('grep') && !/ProjectHub|Electron/.test(l))
+      .slice(0, 3)
+    for (const line of procLines) {
+      const m = line.match(/^(\d+)\s+(.*)$/)
+      if (!m) continue
+      facts.push(`发现运行中的进程：pid=${m[1]} ${m[2].slice(0, 200)}`)
+    }
+    if (!procLines.length) facts.push(`未发现名称包含 ${query} 的运行中进程`)
+
+    return { facts: facts.join('\n'), candidates }
   }
 
   private async scanLaunchAgents(): Promise<ServiceCandidate[]> {
@@ -372,6 +539,20 @@ class ServiceManagerService {
       })
     }
     return candidates
+  }
+
+  // 根据退出前的输出给出可操作的异常提示
+  private diagnoseExit(output: string): string {
+    if (/interactive TTY|requires? a TTY|needs? a TTY|需要交互式/i.test(output)) {
+      return '该命令以交互式界面（TUI）启动，无法在后台运行。请编辑服务，把命令改成对应的守护进程/服务模式子命令（例如 openclaw gateway）'
+    }
+    if (/EADDRINUSE|address already in use|端口已被占用/i.test(output)) {
+      return '端口已被占用：可能该服务已由系统（launchd/任务计划）或其他进程启动，可在服务列表查看端口探测状态，或更换端口'
+    }
+    if (/command not found|命令未找到|ENOENT/i.test(output)) {
+      return '命令未找到：请确认命令已安装且在 PATH 中，或使用绝对路径'
+    }
+    return ''
   }
 
   // ---- 内部工具 ----

@@ -130,6 +130,15 @@ CREATE TABLE IF NOT EXISTS service (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_service_native ON service(source, native_id) WHERE native_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS ai_config (
+  id         TEXT PRIMARY KEY DEFAULT 'default',
+  provider   TEXT NOT NULL DEFAULT 'ollama',
+  base_url   TEXT NOT NULL DEFAULT '',
+  api_key    TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at TEXT DEFAULT (datetime('now'))

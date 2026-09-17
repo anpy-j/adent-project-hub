@@ -16,7 +16,10 @@ import type {
   ServiceCandidate,
   ServiceLogChunk,
   ServiceStatusInfo,
-  ServiceAnomaly
+  ServiceAnomaly,
+  AgentSearchResult,
+  AiConfig,
+  AiProviderOption
 } from '@/types'
 
 export interface ProjectHubAPI {
@@ -107,9 +110,17 @@ export interface ProjectHubAPI {
     clearLog: (id: string) => Promise<void>
     importScan: () => Promise<ServiceCandidate[]>
     import: (candidates: ServiceCandidate[]) => Promise<number>
+    agentSearch: (query: string) => Promise<AgentSearchResult>
     onLog: (callback: (chunk: ServiceLogChunk) => void) => () => void
     onStatus: (callback: (info: ServiceStatusInfo) => void) => () => void
     onAnomaly: (callback: (anomaly: ServiceAnomaly) => void) => () => void
+  }
+  ai: {
+    providers: () => Promise<AiProviderOption[]>
+    getConfig: () => Promise<AiConfig>
+    saveConfig: (data: AiConfig) => Promise<AiConfig>
+    listModels: (cfg?: AiConfig) => Promise<string[]>
+    test: (cfg?: AiConfig) => Promise<string>
   }
   system: {
     openPath: (path: string) => Promise<void>

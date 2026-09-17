@@ -8,7 +8,8 @@ import { runnerService, getMainWindowSender } from '../services/runner.service'
 import { serviceManager } from '../services/service-manager.service'
 
 import { gitSummary, readRemotes, detectPlatformOf, toWebUrl, gitLog, gitInit, gitSetRemote, gitCommitAll, gitCommitFiles, gitPushUpstream, gitPullSafe, gitPushSimple, gitBranches, gitCheckout } from '../services/git.service'
-import type { Project, ProjectRemote, ServiceCandidate } from '../../src/types'
+import type { Project, ProjectRemote, ServiceCandidate, AiConfig } from '../../src/types'
+import { aiService } from '../services/ai.service'
 import { getDb } from '../db'
 
 const STAGE_RANK: Record<string, number> = { planning: 0, developing: 1, testing: 2, released: 3 }
@@ -293,6 +294,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('service:listRunning', () => serviceManager.listRunning())
   ipcMain.handle('service:importScan', () => serviceManager.importScan())
   ipcMain.handle('service:import', (_e, candidates: ServiceCandidate[]) => serviceManager.importSelected(candidates))
+  ipcMain.handle('service:agentSearch', (_e, query: string) => serviceManager.agentSearch(query))
+
+  // ---- AI 设置（服务发现 Agent） ----
+  ipcMain.handle('ai:providers', () => aiService.providers())
+  ipcMain.handle('ai:getConfig', () => aiService.getConfig())
+  ipcMain.handle('ai:saveConfig', (_e, data: AiConfig) => aiService.saveConfig(data))
+  ipcMain.handle('ai:listModels', (_e, cfg?: AiConfig) => aiService.listModels(cfg))
+  ipcMain.handle('ai:test', (_e, cfg?: AiConfig) => aiService.test(cfg))
 
   // ---- task ----
   ipcMain.handle('task:history', (_e, projectId: string, type?: string) => {

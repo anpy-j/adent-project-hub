@@ -1,7 +1,7 @@
 import { randomUUID as uuid } from 'crypto'
 import { getDb } from '../index'
 import { randomUUID } from 'crypto'
-import type { Project, ProjectRemote, TaskItem, Workspace, ServiceItem } from '../../../src/types'
+import type { Project, ProjectRemote, TaskItem, Workspace, ServiceItem, AiConfig } from '../../../src/types'
 
 function parseTags(tags: string | null): string[] | null {
   if (!tags) return null
@@ -241,5 +241,36 @@ export const serviceRepo = {
   },
   remove(id: string): void {
     getDb().prepare('DELETE FROM service WHERE id = ?').run(id)
+  }
+}
+
+export const aiConfigRepo = {
+  get(): AiConfig {
+    const row = getDb()
+      .prepare("SELECT provider, base_url, api_key, model FROM ai_config WHERE id = 'default'")
+      .get() as AiConfig | undefined
+    return (
+      row ?? { provider: 'ollama', base_url: 'http://localhost:11434/v1', api_key: '', model: '' }
+    )
+  },
+  save(data: AiConfig): AiConfig {
+    getDb()
+      .prepare(
+        `INSERT INTO ai_config (id, provider, base_url, api_key, model)
+         VALUES ('default', @provider, @base_url, @api_key, @model)
+         ON CONFLICT(id) DO UPDATE SET
+           provider = excluded.provider,
+           base_url = excluded.base_url,
+           api_key = excluded.api_key,
+           model = excluded.model,
+           updated_at = datetime('now')`
+      )
+      .run({
+        provider: data.provider,
+        base_url: data.base_url ?? '',
+        api_key: data.api_key ?? '',
+        model: data.model ?? ''
+      })
+    return this.get()
   }
 }
