@@ -110,6 +110,24 @@ CREATE TABLE IF NOT EXISTS task (
 );
 CREATE INDEX IF NOT EXISTS idx_task_todo ON task(project_id, done);
 
+CREATE TABLE IF NOT EXISTS service (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  group_name      TEXT,
+  command         TEXT NOT NULL,
+  cwd             TEXT,
+  port            INTEGER,
+  autostart       INTEGER DEFAULT 0,
+  source          TEXT NOT NULL DEFAULT 'manual',
+  native_id       TEXT,
+  description     TEXT,
+  last_status     TEXT,
+  last_started_at TEXT,
+  created_at      TEXT DEFAULT (datetime('now')),
+  updated_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_service_native ON service(source, native_id) WHERE native_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at TEXT DEFAULT (datetime('now'))

@@ -28,6 +28,9 @@ const activeIndex = computed(() => route.path)
         <el-menu-item index="/projects">
           <el-icon><Folder /></el-icon>项目
         </el-menu-item>
+        <el-menu-item index="/services">
+          <el-icon><Odometer /></el-icon>服务管理
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>设置
         </el-menu-item>
