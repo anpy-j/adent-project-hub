@@ -10,6 +10,7 @@ workspaceStore.load()
 
 const activePath = computed(() => {
   if (route.path.startsWith('/projects')) return '/projects'
+  if (route.path.startsWith('/services')) return '/services'
   if (route.path.startsWith('/settings')) return '/settings'
   return route.path
 })
@@ -85,6 +86,16 @@ function handleAddProject() {
           >
             <el-icon class="nav-icon"><Plus /></el-icon>
             <span>添加项目</span>
+          </button>
+
+          <button
+            type="button"
+            class="nav-item"
+            :class="{ active: activePath === '/services' }"
+            @click="navigateTo('/services')"
+          >
+            <el-icon class="nav-icon"><Odometer /></el-icon>
+            <span>服务管理</span>
           </button>
 
           <button

@@ -9,6 +9,7 @@ import App from './App.vue'
 import ProjectList from './views/ProjectList.vue'
 import ProjectDetail from './views/ProjectDetail.vue'
 import Settings from './views/Settings.vue'
+import Services from './views/Services.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -16,6 +17,7 @@ const router = createRouter({
     { path: '/', redirect: '/projects' },
     { path: '/projects', name: 'projects', component: ProjectList },
     { path: '/projects/:id', name: 'project-detail', component: ProjectDetail },
+    { path: '/services', name: 'services', component: Services },
     { path: '/settings', name: 'settings', component: Settings }
   ]
 })
