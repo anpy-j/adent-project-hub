@@ -439,12 +439,15 @@ onUnmounted(() => {
           </el-select>
         </el-form-item>
         <el-form-item label="启动命令" required>
-          <el-input
-            v-model="form.command"
-            type="textarea"
-            :rows="2"
-            placeholder="完整 shell 命令，例如 openclaw run --port 3000"
-          />
+          <div class="cmd-field">
+            <el-input
+              v-model="form.command"
+              type="textarea"
+              :rows="2"
+              placeholder="完整 shell 命令，例如 openclaw gateway --port 3000"
+            />
+            <span class="form-tip">注意：交互式界面类命令（如直接运行 openclaw、codex 会进入 TUI）无法后台运行，请填写其守护进程/服务模式子命令</span>
+          </div>
         </el-form-item>
         <el-form-item label="工作目录">
           <div class="cwd-row">
@@ -677,6 +680,14 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   width: 100%;
+}
+.cmd-field {
+  width: 100%;
+}
+.cmd-field .form-tip {
+  display: block;
+  margin: 4px 0 0;
+  line-height: 1.4;
 }
 .form-tip {
   margin-left: 10px;

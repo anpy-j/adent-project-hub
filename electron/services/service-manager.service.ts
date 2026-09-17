@@ -24,6 +24,7 @@ class ServiceManagerService {
   private running = new Map<string, RunningService>()
   private stopping = new Set<string>()
   private exitWaiters = new Map<string, Array<() => void>>()
+  private recentOutput = new Map<string, string>()
 
   list(): ServiceItem[] {
     return serviceRepo.list()
@@ -103,6 +104,9 @@ class ServiceManagerService {
       const chunk: ServiceLogChunk = { serviceId, runId, stream, data, timestamp: Date.now() }
       this.send('service:log', chunk)
       appendFileSync(logPath, data)
+      // 记录最近输出用于异常归因（上限 8KB）
+      const buf = (this.recentOutput.get(serviceId) || '') + data
+      this.recentOutput.set(serviceId, buf.length > 8192 ? buf.slice(-8192) : buf)
     }
 
     child.stdout?.on('data', (d: Buffer) => emit('stdout', d.toString()))
@@ -129,13 +133,18 @@ class ServiceManagerService {
       })
 
       if (status === 'abnormal') {
+        const name = entry?.service.name ?? svc.name
+        const hint = this.diagnoseExit(this.recentOutput.get(serviceId) || '')
+        this.recentOutput.delete(serviceId)
         const anomaly: ServiceAnomaly = {
           serviceId,
-          serviceName: entry?.service.name ?? svc.name,
+          serviceName: name,
           exitCode: code,
-          message: `服务「${entry?.service.name ?? svc.name}」异常退出（退出码 ${code ?? '-'}）`
+          message: `服务「${name}」异常退出（退出码 ${code ?? '-'}）${hint ? `。${hint}` : ''}`
         }
         this.send('service:anomaly', anomaly)
+      } else {
+        this.recentOutput.delete(serviceId)
       }
 
       this.resolveExitWaiters(serviceId)
@@ -530,6 +539,20 @@ class ServiceManagerService {
       })
     }
     return candidates
+  }
+
+  // 根据退出前的输出给出可操作的异常提示
+  private diagnoseExit(output: string): string {
+    if (/interactive TTY|requires? a TTY|needs? a TTY|需要交互式/i.test(output)) {
+      return '该命令以交互式界面（TUI）启动，无法在后台运行。请编辑服务，把命令改成对应的守护进程/服务模式子命令（例如 openclaw gateway）'
+    }
+    if (/EADDRINUSE|address already in use|端口已被占用/i.test(output)) {
+      return '端口已被占用：可能该服务已由系统（launchd/任务计划）或其他进程启动，可在服务列表查看端口探测状态，或更换端口'
+    }
+    if (/command not found|命令未找到|ENOENT/i.test(output)) {
+      return '命令未找到：请确认命令已安装且在 PATH 中，或使用绝对路径'
+    }
+    return ''
   }
 
   // ---- 内部工具 ----
