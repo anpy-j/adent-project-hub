@@ -1,0 +1,175 @@
+:root {
+  /* Brand & Neutral Color Tokens */
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-light: #dbeafe;
+  --ink: #0f172a;
+  --ink-2: #1e293b;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --canvas: #f8fafc;
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+
+  /* Element Plus Theme Overrides */
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #60a5fa;
+  --el-color-primary-light-5: #93c5fd;
+  --el-color-primary-light-7: #bfdbfe;
+  --el-color-primary-light-8: #dbeafe;
+  --el-color-primary-light-9: #eff6ff;
+  --el-color-primary-dark-2: #1d4ed8;
+
+  --el-color-success: #10b981;
+  --el-color-success-light-9: #ecfdf5;
+  --el-color-warning: #f59e0b;
+  --el-color-warning-light-9: #fffbeb;
+  --el-color-danger: #ef4444;
+  --el-color-danger-light-9: #fef2f2;
+  --el-color-info: #3b82f6;
+  --el-color-info-light-9: #eff6ff;
+
+  --el-text-color-primary: #0f172a;
+  --el-text-color-regular: #1e293b;
+  --el-text-color-secondary: #64748b;
+  --el-text-color-placeholder: #94a3b8;
+
+  --el-border-color: #e2e8f0;
+  --el-border-color-light: #edf2f7;
+  --el-border-color-lighter: #f8fafc;
+  --el-border-color-extra-light: #f1f5f9;
+
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f8fafc;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-light: #f8fafc;
+  --el-fill-color-lighter: #f1f5f9;
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-large: 12px;
+  --el-border-radius-round: 9999px;
+
+  --el-card-border-radius: 12px;
+  --el-dialog-border-radius: 12px;
+
+  --el-box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04);
+  --el-box-shadow-light: 0 4px 20px rgba(0, 0, 0, 0.04);
+  --el-box-shadow-lighter: 0 2px 10px rgba(0, 0, 0, 0.02);
+}
+
+/* Global Reset & Base Typography */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--ink-2);
+  background-color: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Monospace text helper */
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+}
+
+/* Global Card & Table Tweaks */
+.el-card {
+  border-radius: 12px !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04) !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.el-button {
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: 8px !important;
+  box-shadow: 0 0 0 1px var(--line) inset !important;
+}
+
+.el-input__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px #cbd5e1 inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 2px var(--primary) inset !important;
+}
+
+.el-dialog {
+  border-radius: 12px !important;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.16) !important;
+}
+
+.el-dialog__header {
+  padding: 18px 24px !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid var(--line);
+}
+
+.el-dialog__body {
+  padding: 24px !important;
+}
+
+.el-dialog__footer {
+  padding: 14px 24px !important;
+  border-top: 1px solid var(--line);
+}
+
+.el-tag {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.el-tag--small {
+  border-radius: 4px;
+}
+
+.el-table {
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-row-hover-bg-color: #f1f5f9;
+  border-radius: 8px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Animations */
+@keyframes pulse-dot {
+  0% {
+    transform: scale(0.95);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 1;
+  }
+}
+
+.pulse-dot {
+  animation: pulse-dot 1.4s infinite ease-in-out;
+}
