@@ -149,7 +149,7 @@ export interface LogChunk {
 }
 
 // ---- 本机服务管理 ----
-export type ServiceSource = 'manual' | 'launchd' | 'schtasks'
+export type ServiceSource = 'manual' | 'launchd' | 'schtasks' | 'cli' | 'agent'
 export type ServiceRunStatus = 'running' | 'stopped' | 'abnormal'
 
 export interface ServiceItem {
@@ -181,10 +181,37 @@ export interface ServiceCandidate {
   name: string
   command: string
   cwd: string | null
+  port?: number | null
   nativeId: string
   source: Exclude<ServiceSource, 'manual'>
   autostart: boolean
   alreadyImported: boolean
+  description?: string | null
+}
+
+export interface AgentSearchResult {
+  query: string
+  usedAi: boolean
+  notice: string
+  candidates: ServiceCandidate[]
+}
+
+// ---- AI 设置（服务发现 Agent） ----
+export type AiProvider = 'ollama' | 'deepseek' | 'openai' | 'moonshot' | 'custom'
+
+export interface AiConfig {
+  provider: AiProvider
+  base_url: string
+  api_key: string
+  model: string
+}
+
+export interface AiProviderOption {
+  value: AiProvider
+  label: string
+  baseUrl: string
+  needKey: boolean
+  hint: string
 }
 
 export interface ServiceLogChunk {

@@ -170,11 +170,38 @@ const importDialogVisible = ref(false)
 const importLoading = ref(false)
 const importCandidates = ref<ServiceCandidate[]>([])
 const importSelection = ref<string[]>([])
+const importFilter = ref('')
+const agentQuery = ref('')
+const agentSearching = ref(false)
+const agentNotice = ref('')
+
+const filteredImportRows = computed(() => {
+  const kw = importFilter.value.trim().toLowerCase()
+  if (!kw) return importCandidates.value
+  return importCandidates.value.filter(
+    (c) => c.name.toLowerCase().includes(kw) || c.command.toLowerCase().includes(kw)
+  )
+})
+
+const sourceLabel: Record<string, string> = {
+  launchd: 'launchd',
+  schtasks: '任务计划',
+  cli: 'CLI',
+  agent: 'AI 发现'
+}
+
+function sourceTagType(s: string): 'primary' | 'success' | 'warning' | 'info' {
+  if (s === 'agent') return 'warning'
+  if (s === 'cli') return 'success'
+  return 'info'
+}
 
 async function openImport() {
   importDialogVisible.value = true
   importLoading.value = true
   importSelection.value = []
+  importFilter.value = ''
+  agentNotice.value = ''
   try {
     importCandidates.value = await window.api.service.importScan()
   } catch (e) {
@@ -185,11 +212,35 @@ async function openImport() {
   }
 }
 
+async function runAgentSearch() {
+  const q = agentQuery.value.trim()
+  if (!q) return ElMessage.warning('请输入服务名，例如 openclaw')
+  agentSearching.value = true
+  agentNotice.value = ''
+  try {
+    const res = await window.api.service.agentSearch(q)
+    // AI 搜索结果与已扫描列表合并（按 key 去重）
+    const existKeys = new Set(importCandidates.value.map((c) => c.key))
+    const fresh = res.candidates.filter((c) => !existKeys.has(c.key))
+    importCandidates.value = [...fresh, ...importCandidates.value]
+    importFilter.value = q
+    agentNotice.value = res.usedAi
+      ? `AI 搜索完成：识别出 ${res.candidates.length} 个候选（已按「${q}」过滤显示）`
+      : res.notice
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    agentSearching.value = false
+  }
+}
+
 async function doImport() {
   const picked = importCandidates.value.filter((c) => importSelection.value.includes(c.key) && !c.alreadyImported)
   if (!picked.length) return ElMessage.warning('请先选择要导入的服务')
   try {
-    const count = await window.api.service.import(picked)
+    // 关键：contextBridge 无法克隆 Vue 响应式代理，必须先转纯对象
+    const plain = JSON.parse(JSON.stringify(picked))
+    const count = await window.api.service.import(plain)
     ElMessage.success(`已导入 ${count} 个服务`)
     importDialogVisible.value = false
     await serviceStore.load()
@@ -420,39 +471,63 @@ onUnmounted(() => {
     </el-dialog>
 
     <!-- 导入系统服务 -->
-    <el-dialog v-model="importDialogVisible" title="导入系统服务" width="680">
-      <p class="import-hint">
-        {{ `扫描 ${'~/Library/LaunchAgents'} 与系统任务计划中的可导入服务，勾选后导入到服务列表。` }}
-      </p>
+    <el-dialog v-model="importDialogVisible" title="导入系统服务" width="720">
+      <div class="agent-search-row">
+        <el-input
+          v-model="agentQuery"
+          placeholder="输入服务名让 AI 搜索本机服务，例如 openclaw / codex / antigravity"
+          clearable
+          @keyup.enter="runAgentSearch"
+        >
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-button type="primary" :loading="agentSearching" @click="runAgentSearch">
+          <el-icon><MagicStick /></el-icon>AI 搜索
+        </el-button>
+      </div>
+      <el-alert
+        v-if="agentNotice"
+        :title="agentNotice"
+        :type="agentNotice.startsWith('AI 搜索完成') ? 'success' : 'info'"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 10px"
+      />
+      <div class="import-filter-row">
+        <el-input v-model="importFilter" placeholder="过滤当前列表" clearable size="small" style="width: 240px">
+          <template #prefix><el-icon><Filter /></el-icon></template>
+        </el-input>
+        <span class="import-count">共 {{ filteredImportRows.length }} 项</span>
+      </div>
       <el-table
         v-loading="importLoading"
-        :data="importCandidates"
+        :data="filteredImportRows"
         style="width: 100%"
-        max-height="400"
-        empty-text="未发现可导入的系统服务"
-        @selection-change="(rows: ServiceCandidate[]) => (importSelection = rows.map((r) => r.key))"
+        max-height="380"
+        empty-text="未发现可导入的服务"
+        @selection-change="(rows: unknown[]) => (importSelection = (rows as ServiceCandidate[]).map((r) => r.key))"
       >
-        <el-table-column type="selection" width="42" :selectable="(row: ServiceCandidate) => !row.alreadyImported" />
-        <el-table-column label="名称" min-width="180">
+        <el-table-column type="selection" width="42" :selectable="(row: unknown) => !(row as ServiceCandidate).alreadyImported" />
+        <el-table-column label="名称" min-width="160">
           <template #default="{ row }">
-            <span class="mono">{{ row.name }}</span>
-            <el-tag v-if="row.alreadyImported" size="small" type="info" style="margin-left: 6px">已导入</el-tag>
+            <span class="mono">{{ (row as ServiceCandidate).name }}</span>
+            <el-tag v-if="(row as ServiceCandidate).alreadyImported" size="small" type="info" style="margin-left: 6px">已导入</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="命令" min-width="220">
           <template #default="{ row }">
-            <span class="svc-command" :title="row.command">{{ row.command }}</span>
+            <span class="svc-command" :title="(row as ServiceCandidate).command">{{ (row as ServiceCandidate).command }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="来源" width="100">
+        <el-table-column label="来源" width="90">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ row.source === 'launchd' ? 'launchd' : '任务计划' }}</el-tag>
+            <el-tag size="small" effect="plain" :type="sourceTagType((row as ServiceCandidate).source)">
+              {{ sourceLabel[(row as ServiceCandidate).source] || (row as ServiceCandidate).source }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="自启动" width="80">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.autostart ? 'success' : 'info'">{{ row.autostart ? '是' : '否' }}</el-tag>
-          </template>
+        <el-table-column label="说明" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ (row as ServiceCandidate).description || '-' }}</template>
         </el-table-column>
       </el-table>
       <template #footer>
@@ -611,6 +686,21 @@ onUnmounted(() => {
 .import-hint {
   margin: 0 0 12px;
   font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.agent-search-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.import-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.import-count {
+  font-size: 12px;
   color: var(--el-text-color-secondary);
 }
 </style>
