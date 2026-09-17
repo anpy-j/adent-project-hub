@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ProjectHubAPI } from '../src/api/ipc'
-import type { LogChunk, TaskHistory, ServiceLogChunk, ServiceStatusInfo, ServiceAnomaly } from '../src/types'
+import type { LogChunk, TaskHistory, ServiceLogChunk, ServiceStatusInfo, ServiceAnomaly, AiConfig } from '../src/types'
 
 function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
   const plainArgs = args.map((a) => JSON.parse(JSON.stringify(a)))
@@ -84,6 +84,7 @@ const api: ProjectHubAPI = {
     clearLog: (id: string) => invoke('service:clearLog', id),
     importScan: () => invoke('service:importScan'),
     import: (candidates) => invoke('service:import', candidates),
+    agentSearch: (query: string) => invoke('service:agentSearch', query),
     onLog: (callback) => {
       const handler = (_e: unknown, chunk: ServiceLogChunk) => callback(chunk)
       ipcRenderer.on('service:log', handler)
@@ -99,6 +100,13 @@ const api: ProjectHubAPI = {
       ipcRenderer.on('service:anomaly', handler)
       return () => ipcRenderer.removeListener('service:anomaly', handler)
     }
+  },
+  ai: {
+    providers: () => invoke('ai:providers'),
+    getConfig: () => invoke('ai:getConfig'),
+    saveConfig: (data) => invoke('ai:saveConfig', data),
+    listModels: (cfg?) => invoke('ai:listModels', cfg),
+    test: (cfg?) => invoke('ai:test', cfg)
   },
   system: {
     openPath: (path: string) => invoke('system:openPath', path),
