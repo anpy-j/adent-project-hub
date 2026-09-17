@@ -197,7 +197,7 @@ export interface AgentSearchResult {
 }
 
 // ---- AI 设置（服务发现 Agent） ----
-export type AiProvider = 'ollama' | 'deepseek' | 'openai' | 'moonshot' | 'custom'
+export type AiProvider = 'ollama' | 'opencode' | 'deepseek' | 'openai' | 'moonshot' | 'custom'
 
 export interface AiConfig {
   provider: AiProvider
