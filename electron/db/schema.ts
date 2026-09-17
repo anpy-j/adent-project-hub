@@ -49,11 +49,11 @@ CREATE INDEX IF NOT EXISTS idx_remote_project ON project_remote(project_id);
 CREATE TABLE IF NOT EXISTS project_config (
   project_id      TEXT PRIMARY KEY REFERENCES project(id) ON DELETE CASCADE,
   run_command     TEXT,
-  build_command   TEXT,
   run_env         TEXT,
   build_env       TEXT,
   run_cwd         TEXT,
   port            INTEGER,
+  auto_restart    INTEGER DEFAULT 0,
   extra           TEXT
 );
 
@@ -106,6 +106,8 @@ CREATE TABLE IF NOT EXISTS task (
   title       TEXT NOT NULL,
   tag         TEXT NOT NULL DEFAULT 'chore',
   done        INTEGER DEFAULT 0,
+  sort_order  INTEGER DEFAULT 0,
+  group_name  TEXT,
   created_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_todo ON task(project_id, done);

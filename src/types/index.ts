@@ -64,7 +64,18 @@ export interface TaskItem {
   title: string
   tag: TaskTag
   done: number
+  sort_order: number
+  group_name: string | null
   created_at: string
+}
+
+export interface TaskStat {
+  taskId: string
+  pid: number | null
+  cpu: number
+  mem: number
+  procs: number
+  status: TaskStatus
 }
 
 export interface RunSuggestion {

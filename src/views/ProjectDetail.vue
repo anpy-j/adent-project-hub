@@ -45,6 +45,101 @@ const external = ref<{ running: boolean; processes: Array<{ pid: number; command
 const tasks = ref<TaskItem[]>([])
 const newTaskTitle = ref('')
 const newTaskTag = ref<'feature' | 'bug' | 'chore'>('feature')
+const newTaskGroup = ref('')
+
+const taskGroups = computed(() => {
+  const map = new Map<string, TaskItem[]>()
+  for (const t of tasks.value) {
+    const key = t.group_name || ''
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(t)
+  }
+  return [...map.entries()].map(([key, list]) => ({
+    key,
+    label: key || '未分组',
+    active: list.filter((t) => !t.done),
+    done: list.filter((t) => t.done)
+  }))
+})
+
+const existingGroups = computed(() =>
+  [...new Set(tasks.value.map((t) => t.group_name || '').filter(Boolean))].sort()
+)
+
+const editTaskVisible = ref(false)
+const editTaskForm = ref<{ id: string; title: string; tag: 'feature' | 'bug' | 'chore'; group_name: string }>({
+  id: '',
+  title: '',
+  tag: 'feature',
+  group_name: ''
+})
+
+const autoRestart = ref(false)
+
+function openEditTask(t: TaskItem) {
+  editTaskForm.value = {
+    id: t.id,
+    title: t.title,
+    tag: t.tag,
+    group_name: t.group_name || ''
+  }
+  editTaskVisible.value = true
+}
+
+async function saveEditTask() {
+  const f = editTaskForm.value
+  if (!f.title.trim()) {
+    ElMessage.warning('请填写任务标题')
+    return
+  }
+  try {
+    await window.api.project.tasks.update(f.id, {
+      title: f.title,
+      tag: f.tag,
+      group_name: f.group_name || null
+    })
+    editTaskVisible.value = false
+    await loadTasks()
+    ElMessage.success('任务已更新')
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
+async function moveTask(t: TaskItem, dir: -1 | 1) {
+  const siblings = tasks.value.filter(
+    (x) => (x.group_name || '') === (t.group_name || '') && !!x.done === !!t.done
+  )
+  const idx = siblings.findIndex((x) => x.id === t.id)
+  const swapWith = siblings[idx + dir]
+  if (!swapWith) return
+  const ordered = tasks.value.map((x) => x.id)
+  const i = ordered.indexOf(t.id)
+  const j = ordered.indexOf(swapWith.id)
+  ;[ordered[i], ordered[j]] = [ordered[j], ordered[i]]
+  try {
+    tasks.value = await window.api.project.tasks.reorder(projectId, ordered)
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
+
+async function loadAutoRestart() {
+  try {
+    autoRestart.value = await window.api.project.getAutoRestart(projectId)
+  } catch {
+    autoRestart.value = false
+  }
+}
+
+async function toggleAutoRestart(enabled: boolean | string | number) {
+  try {
+    autoRestart.value = await window.api.project.setAutoRestart(projectId, !!enabled)
+    ElMessage.success(autoRestart.value ? '已开启崩溃自动重启（对新启动任务生效）' : '已关闭崩溃自动重启')
+  } catch (e) {
+    ElMessage.error(String((e as Error).message || e))
+  }
+}
 
 const selectedChanges = ref<Set<string>>(new Set())
 const commitMessage = ref('')
@@ -378,11 +473,22 @@ async function addTask() {
     return
   }
   try {
-    tasks.value = await window.api.project.tasks.add(projectId, title, newTaskTag.value)
+    tasks.value = await window.api.project.tasks.add(projectId, title, newTaskTag.value, newTaskGroup.value || null)
     newTaskTitle.value = ''
-    await load()
+    await refreshProgressAndNotify()
   } catch (e) {
     ElMessage.error(`添加失败: ${(e as Error).message}`)
+  }
+}
+
+async function refreshProgressAndNotify() {
+  const prevStage = project.value?.progress_stage
+  const detail = await window.api.project.detail(projectId)
+  project.value = detail
+  progress.value.percent = detail.progress_percent || 0
+  progress.value.stage = (detail.progress_stage || 'planning') as Project['progress_stage']
+  if (prevStage && detail.progress_stage && detail.progress_stage !== prevStage) {
+    ElMessage.info(`阶段已自动联动：${stageLabel[detail.progress_stage] || detail.progress_stage}`)
   }
 }
 
@@ -390,9 +496,7 @@ async function toggleTask(t: TaskItem) {
   try {
     await window.api.project.tasks.toggle(t.id)
     await loadTasks()
-    const detail = await window.api.project.detail(projectId)
-    project.value = detail
-    progress.value.percent = detail.progress_percent || 0
+    await refreshProgressAndNotify()
   } catch (e) {
     ElMessage.error(String((e as Error).message || e))
   }
@@ -402,7 +506,7 @@ async function removeTask(t: TaskItem) {
   try {
     await window.api.project.tasks.remove(t.id)
     tasks.value = tasks.value.filter((x) => x.id !== t.id)
-    await load()
+    await refreshProgressAndNotify()
   } catch (e) {
     ElMessage.error(String((e as Error).message || e))
   }
@@ -533,6 +637,7 @@ onMounted(() => {
   loadRunCommands()
   loadRunState()
   loadTasks()
+  loadAutoRestart()
   window.api.runner.onLog(appendRunLog)
   window.api.runner.onStatus(onRunStatus)
 })
@@ -618,21 +723,52 @@ onMounted(() => {
             <el-divider>任务列表（驱动进度）</el-divider>
             <div class="task-add">
               <el-input v-model="newTaskTitle" size="small" placeholder="新任务标题" @keyup.enter="addTask" />
-              <el-select v-model="newTaskTag" size="small" style="width: 100px">
+              <el-select v-model="newTaskTag" size="small" style="width: 92px">
                 <el-option label="功能" value="feature" />
                 <el-option label="缺陷" value="bug" />
                 <el-option label="杂项" value="chore" />
               </el-select>
+              <el-select
+                v-model="newTaskGroup"
+                size="small"
+                style="width: 110px"
+                placeholder="分组"
+                clearable
+                filterable
+                allow-create
+                default-first-option
+              >
+                <el-option v-for="g in existingGroups" :key="g" :label="g" :value="g" />
+              </el-select>
               <el-button size="small" type="primary" @click="addTask">添加</el-button>
             </div>
-            <div class="task-list">
-              <div v-for="t in tasks" :key="t.id" class="task-row">
-                <el-checkbox :model-value="!!t.done" @change="toggleTask(t)" />
-                <span class="task-title" :class="{ done: t.done }">{{ t.title }}</span>
-                <el-tag size="small" effect="plain" :type="t.tag === 'bug' ? 'danger' : t.tag === 'feature' ? 'primary' : 'info'">
-                  {{ t.tag }}
-                </el-tag>
-                <el-button size="small" text type="danger" @click="removeTask(t)">删除</el-button>
+            <div class="task-groups">
+              <div v-for="g in taskGroups" :key="g.key" class="task-group">
+                <div class="task-group-head">
+                  <span>{{ g.label }}</span>
+                  <span class="task-group-count">{{ g.active.length + g.done.length }} 项</span>
+                </div>
+                <div class="task-list">
+                  <div v-for="t in [...g.active, ...g.done]" :key="t.id" class="task-row">
+                    <el-checkbox :model-value="!!t.done" @change="toggleTask(t)" />
+                    <span class="task-title" :class="{ done: t.done }">{{ t.title }}</span>
+                    <el-tag size="small" effect="plain" :type="t.tag === 'bug' ? 'danger' : t.tag === 'feature' ? 'primary' : 'info'">
+                      {{ t.tag }}
+                    </el-tag>
+                    <span class="task-ops">
+                      <el-button size="small" text :disabled="!!t.done" @click="moveTask(t, -1)">
+                        <el-icon><ArrowUp /></el-icon>
+                      </el-button>
+                      <el-button size="small" text :disabled="!!t.done" @click="moveTask(t, 1)">
+                        <el-icon><ArrowDown /></el-icon>
+                      </el-button>
+                      <el-button size="small" text type="primary" @click="openEditTask(t)">
+                        <el-icon><EditPen /></el-icon>
+                      </el-button>
+                      <el-button size="small" text type="danger" @click="removeTask(t)">删除</el-button>
+                    </span>
+                  </div>
+                </div>
               </div>
               <el-empty v-if="!tasks.length" description="暂无任务，进度按任务完成比例自动计算" :image-size="50" />
             </div>
@@ -773,6 +909,13 @@ onMounted(() => {
               <el-input v-model="customCmd" size="small" placeholder="添加命令，如 ./run.sh" @keyup.enter="addCustomCommand" />
               <el-button size="small" type="primary" plain @click="addCustomCommand">添加</el-button>
             </div>
+            <div class="restart-row">
+              <div class="restart-info">
+                <b>崩溃自动重启</b>
+                <div class="tip-line">进程异常退出时自动重启，最多连续 5 次，对之后启动的任务生效</div>
+              </div>
+              <el-switch :model-value="autoRestart" @change="toggleAutoRestart" />
+            </div>
             <div v-if="runLogs.length" ref="logBoxRef" class="log-box compact">
               <pre>{{ runLogsText }}</pre>
             </div>
@@ -799,6 +942,38 @@ onMounted(() => {
         </div>
       </div>
     </template>
+    <!-- 任务编辑弹窗 -->
+    <el-dialog v-model="editTaskVisible" title="编辑任务" width="420">
+      <el-form label-width="64px">
+        <el-form-item label="标题">
+          <el-input v-model="editTaskForm.title" @keyup.enter="saveEditTask" />
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="editTaskForm.tag">
+            <el-radio-button value="feature">功能</el-radio-button>
+            <el-radio-button value="bug">缺陷</el-radio-button>
+            <el-radio-button value="chore">杂项</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="分组">
+          <el-select
+            v-model="editTaskForm.group_name"
+            clearable
+            filterable
+            allow-create
+            default-first-option
+            placeholder="不分组"
+            style="width: 100%"
+          >
+            <el-option v-for="g in existingGroups" :key="g" :label="g" :value="g" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editTaskVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveEditTask">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -847,8 +1022,16 @@ onMounted(() => {
 .log-box pre { margin: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
 .time { font-size: 12px; color: var(--el-text-color-secondary); }
 .task-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.task-groups { margin-top: 4px; }
+.task-group { margin-bottom: 10px; }
+.task-group-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--el-text-color-secondary); padding: 4px 2px; }
+.task-group-count { font-weight: 400; }
 .task-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--el-border-color-light); border-radius: 6px; }
+.task-ops { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
+.task-ops .el-button + .el-button { margin-left: 0; }
 .task-title { flex: 1; color: var(--el-text-color-regular); }
 .task-title.done { color: var(--el-text-color-secondary); text-decoration: line-through; }
 .task-summary { font-size: 12px; color: var(--el-text-color-secondary); }
+.restart-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--el-border-color-light); border-radius: 8px; }
+.restart-info b { font-size: 13px; color: var(--el-text-color-primary); }
 </style>

@@ -22,7 +22,10 @@ export function getDb(): Database.Database {
 const MIGRATIONS: string[] = [
   "ALTER TABLE project ADD COLUMN progress_percent INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE project ADD COLUMN progress_stage TEXT NOT NULL DEFAULT 'planning'",
-  "ALTER TABLE project ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''"
+  "ALTER TABLE project ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE task ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE task ADD COLUMN group_name TEXT",
+  "ALTER TABLE project_config ADD COLUMN auto_restart INTEGER NOT NULL DEFAULT 0"
 ]
 
 function initSchema(database: Database.Database): void {

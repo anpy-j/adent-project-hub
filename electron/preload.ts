@@ -21,14 +21,20 @@ const api: ProjectHubAPI = {
     runCommands: (id: string) => invoke('project:runCommands', id),
     tasks: {
       list: (id: string) => invoke('task:list', id),
-      add: (id: string, title: string, tag: string) => invoke('task:add', id, title, tag),
+      add: (id: string, title: string, tag: string, group?: string | null) =>
+        invoke('task:add', id, title, tag, group),
       toggle: (id: string) => invoke('task:toggle', id),
+      update: (id: string, data: { title?: string; tag?: string; group_name?: string | null }) =>
+        invoke('task:update', id, data),
+      reorder: (id: string, orderedIds: string[]) => invoke('task:reorder', id, orderedIds),
       remove: (id: string) => invoke('task:remove', id)
     },
     customCommands: {
       get: (id: string) => invoke('project:customCommands:get', id),
       save: (id: string, cmds: string[]) => invoke('project:customCommands:save', id, cmds)
-    }
+    },
+    getAutoRestart: (id: string) => invoke('project:autoRestart:get', id),
+    setAutoRestart: (id: string, enabled: boolean) => invoke('project:autoRestart:set', id, enabled)
   },
   git: {
     log: (id: string, count?: number) => invoke('git:log', id, count),
@@ -55,6 +61,7 @@ const api: ProjectHubAPI = {
     probeExternal: (projectId: string) => ipcRenderer.invoke('runner:probeExternal', projectId),
     stop: (taskId: string) => invoke('runner:stop', taskId),
     listRunning: () => invoke('runner:listRunning'),
+    stats: () => invoke('runner:stats'),
     onLog: (callback) => {
       const handler = (_e: unknown, chunk: LogChunk) => callback(chunk)
       ipcRenderer.on('runner:log', handler)

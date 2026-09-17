@@ -11,6 +11,7 @@ import type {
   RunSuggestion,
   LogChunk,
   ProjectType,
+  TaskStat,
   ServiceItem,
   ServiceCandidate,
   ServiceLogChunk,
@@ -46,10 +47,14 @@ export interface ProjectHubAPI {
     },
     tasks: {
       list: (id: string) => Promise<TaskItem[]>
-      add: (id: string, title: string, tag: string) => Promise<TaskItem[]>
+      add: (id: string, title: string, tag: string, group?: string | null) => Promise<TaskItem[]>
       toggle: (taskId: string) => Promise<TaskItem | null>
+      update: (taskId: string, data: { title?: string; tag?: string; group_name?: string | null }) => Promise<TaskItem | null>
+      reorder: (projectId: string, orderedIds: string[]) => Promise<TaskItem[]>
       remove: (taskId: string) => Promise<boolean>
-    }
+    },
+    getAutoRestart: (id: string) => Promise<boolean>
+    setAutoRestart: (id: string, enabled: boolean) => Promise<boolean>
   }
   git: {
     log: (projectId: string, count?: number) => Promise<GitCommit[]>
@@ -75,6 +80,7 @@ export interface ProjectHubAPI {
     probeExternal: (projectId: string) => Promise<{ running: boolean; processes: Array<{ pid: number; command: string }> }>
     stop: (taskId: string) => Promise<void>
     listRunning: () => Promise<TaskHistory[]>
+    stats: () => Promise<TaskStat[]>
     onLog: (callback: (chunk: LogChunk) => void) => () => void
     onStatus: (callback: (task: TaskHistory) => void) => () => void
   }

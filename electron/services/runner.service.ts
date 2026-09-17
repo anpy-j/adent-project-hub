@@ -4,21 +4,40 @@ import { app, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { mkdirSync, appendFileSync, existsSync, readFileSync } from 'fs'
-import type { TaskHistory, LogChunk } from '../../src/types'
+import type { TaskHistory, LogChunk, TaskStat } from '../../src/types'
 import { projectRepo } from '../db/repositories'
 import { resolveRunCommand } from '../strategies/project-commands'
 import { getDb } from '../db'
+
+type Sender = (channel: string, payload: unknown) => void
+
+interface SpawnCommand {
+  bin: string
+  args: string[]
+  env: Record<string, string | undefined>
+  cwd: string
+  display: string
+}
 
 interface RunningTask {
   process: ChildProcess
   task: TaskHistory
   logPath: string
+  cmd: SpawnCommand
+  sender: Sender
+  autoRestart: boolean
+  attempt: number
+  userStopped: boolean
+  restartTimer: NodeJS.Timeout | null
 }
+
+const MAX_RESTARTS = 5
+const RESTART_DELAY_MS = 3000
 
 class RunnerService {
   private running = new Map<string, RunningTask>()
 
-  async start(projectId: string, sender: (channel: string, payload: unknown) => void): Promise<string> {
+  async start(projectId: string, sender: Sender): Promise<string> {
     const project = projectRepo.get(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
     const cmd = resolveRunCommand(project)
@@ -28,7 +47,7 @@ class RunnerService {
   async startCustom(
     projectId: string,
     input: { bin: string; args: string[]; display?: string },
-    sender: (channel: string, payload: unknown) => void
+    sender: Sender
   ): Promise<string> {
     const project = projectRepo.get(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
@@ -41,11 +60,22 @@ class RunnerService {
     )
   }
 
+  private isAutoRestartEnabled(projectId: string): boolean {
+    try {
+      const row = getDb()
+        .prepare('SELECT auto_restart FROM project_config WHERE project_id = ?')
+        .get(projectId) as { auto_restart: number | null } | undefined
+      return !!row?.auto_restart
+    } catch {
+      return false
+    }
+  }
+
   private async spawnTask(
     projectId: string,
-    cmd: { bin: string; args: string[]; env: Record<string, string | undefined>; cwd: string; display: string },
+    cmd: SpawnCommand,
     type: TaskHistory['type'],
-    sender: (channel: string, payload: unknown) => void
+    sender: Sender
   ): Promise<string> {
     const taskId = randomUUID()
     const logPath = this.ensureLogPath(taskId)
@@ -63,6 +93,28 @@ class RunnerService {
       ended_at: null
     }
 
+    this.persistTask(task)
+    projectRepo.update(projectId, { last_run_at: task.started_at })
+
+    const entry: RunningTask = {
+      process: null as unknown as ChildProcess,
+      task,
+      logPath,
+      cmd,
+      sender,
+      autoRestart: this.isAutoRestartEnabled(projectId),
+      attempt: 0,
+      userStopped: false,
+      restartTimer: null
+    }
+    this.running.set(taskId, entry)
+    this.launch(entry)
+    return taskId
+  }
+
+  private launch(entry: RunningTask): void {
+    const { cmd, sender } = entry
+    const taskId = entry.task.id
     const child = spawn(cmd.bin, cmd.args, {
       cwd: cmd.cwd,
       env: cmd.env,
@@ -70,19 +122,22 @@ class RunnerService {
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe']
     })
-
-    task.pid = child.pid ?? null
-    this.persistTask(task)
-
-    const entry: RunningTask = { process: child, task, logPath }
-    this.running.set(taskId, entry)
-
-    projectRepo.update(projectId, { last_run_at: task.started_at })
+    entry.process = child
+    entry.task = {
+      ...entry.task,
+      status: 'running',
+      pid: child.pid ?? null,
+      exit_code: null,
+      ended_at: null,
+      started_at: new Date().toISOString()
+    }
+    this.updateRunningRow(entry.task)
+    sender('runner:status', entry.task)
 
     const emit = (stream: 'stdout' | 'stderr', data: string) => {
       const chunk: LogChunk = { taskId, stream, data, timestamp: Date.now() }
       sender('runner:log', chunk)
-      appendFileSync(logPath, data)
+      appendFileSync(entry.logPath, data)
     }
 
     child.stdout?.on('data', (d: Buffer) => emit('stdout', d.toString()))
@@ -93,28 +148,51 @@ class RunnerService {
       if (code === 0) status = 'success'
       else if (signal === 'SIGTERM' || signal === 'SIGKILL') status = 'stopped'
       const finalTask: TaskHistory = {
-        ...task,
+        ...entry.task,
         status,
         exit_code: code,
         ended_at: new Date().toISOString()
       }
+      entry.task = finalTask
       this.updateTaskStatus(finalTask)
       sender('runner:status', finalTask)
-      this.running.delete(taskId)
+
+      const shouldRestart =
+        status === 'failed' &&
+        entry.autoRestart &&
+        !entry.userStopped &&
+        entry.attempt < MAX_RESTARTS
+
+      if (shouldRestart) {
+        entry.attempt += 1
+        const n = entry.attempt
+        this.emitLocal(entry, 'stderr', `[自动重启] 进程异常退出（exit code=${code ?? 'null'}），${RESTART_DELAY_MS / 1000} 秒后进行第 ${n}/${MAX_RESTARTS} 次自动重启…\n`)
+        entry.restartTimer = setTimeout(() => {
+          entry.restartTimer = null
+          const cur = this.running.get(taskId)
+          if (!cur || cur.userStopped) return
+          this.emitLocal(cur, 'stdout', `[自动重启] 正在重启（第 ${n}/${MAX_RESTARTS} 次）\n`)
+          this.launch(cur)
+        }, RESTART_DELAY_MS)
+      } else if (!entry.restartTimer) {
+        this.running.delete(taskId)
+      }
     })
 
     child.on('error', (err) => {
       emit('stderr', `[进程错误] ${err.message}\n`)
     })
-
-    sender('runner:status', task)
-    return taskId
-  }
-
-  async stop(taskId: string): Promise<void> {
+  }  async stop(taskId: string): Promise<void> {
     const entry = this.running.get(taskId)
     if (!entry) return
-    const pid = entry.process.pid
+    entry.userStopped = true
+    if (entry.restartTimer) {
+      clearTimeout(entry.restartTimer)
+      entry.restartTimer = null
+      this.running.delete(taskId)
+      return
+    }
+    const pid = entry.process?.pid
     const killGroup = (signal: NodeJS.Signals): void => {
       try {
         if (process.platform !== 'win32' && pid) {
@@ -173,6 +251,87 @@ class RunnerService {
     return Array.from(this.running.values()).map((e) => e.task)
   }
 
+  /** 汇总每个运行中任务的进程资源占用（CPU% / 内存 MB / 进程数） */
+  async stats(): Promise<TaskStat[]> {
+    const entries = Array.from(this.running.values()).filter(
+      (e) => e.task.status === 'running' && e.process?.pid
+    )
+    if (!entries.length) return []
+    const result: TaskStat[] = entries.map((e) => ({
+      taskId: e.task.id,
+      pid: e.task.pid,
+      cpu: 0,
+      mem: 0,
+      procs: 1,
+      status: e.task.status
+    }))
+    if (process.platform === 'win32') {
+      await this.fillStatsWindows(entries, result)
+    } else {
+      await this.fillStatsUnix(entries, result)
+    }
+    return result
+  }
+
+  private fillStatsUnix(entries: RunningTask[], result: TaskStat[]): Promise<void> {
+    return new Promise((resolve) => {
+      execFile(
+        'ps',
+        ['-axo', 'pid=,pgid=,pcpu=,rss='],
+        { maxBuffer: 8 * 1024 * 1024, timeout: 8000 },
+        (err, stdout) => {
+          if (err) return resolve()
+          const byPgid = new Map<number, { cpu: number; mem: number; count: number }>()
+          for (const line of String(stdout || '').split('\n')) {
+            const cols = line.trim().split(/\s+/)
+            if (cols.length < 4) continue
+            const [pidStr, pgidStr, cpuStr, rssStr] = cols
+            const pgid = Number(pgidStr)
+            if (!Number(pidStr) || !pgid) continue
+            const agg = byPgid.get(pgid) || { cpu: 0, mem: 0, count: 0 }
+            agg.cpu += parseFloat(cpuStr) || 0
+            agg.mem += (parseFloat(rssStr) || 0) / 1024
+            agg.count += 1
+            byPgid.set(pgid, agg)
+          }
+          entries.forEach((e, i) => {
+            const pgid = e.process.pid
+            const agg = pgid ? byPgid.get(pgid) : undefined
+            if (agg) {
+              result[i].cpu = Math.round(agg.cpu * 10) / 10
+              result[i].mem = Math.round(agg.mem)
+              result[i].procs = agg.count
+            }
+          })
+          resolve()
+        }
+      )
+    })
+  }
+
+  private async fillStatsWindows(entries: RunningTask[], result: TaskStat[]): Promise<void> {
+    for (let i = 0; i < entries.length; i++) {
+      const pid = entries[i].process.pid
+      if (!pid) continue
+      await new Promise<void>((resolve) => {
+        execFile(
+          'tasklist',
+          ['/FO', 'CSV', '/NH', '/FI', `PID eq ${pid}`],
+          { timeout: 8000 },
+          (err, stdout) => {
+            if (!err) {
+              const m = String(stdout || '').match(/"([^"]*)"\s*,\s*"?(\d+)/)
+              if (m) {
+                result[i].mem = Math.round(Number(m[2]) / 1024)
+              }
+            }
+            resolve()
+          }
+        )
+      })
+    }
+  }
+
   readLog(taskId: string): string {
     const entry = this.running.get(taskId)
     const logPath = entry?.logPath
@@ -184,17 +343,24 @@ class RunnerService {
 
   cleanupAll(): void {
     for (const [id, entry] of this.running) {
+      if (entry.restartTimer) clearTimeout(entry.restartTimer)
       try {
-        if (process.platform !== 'win32' && entry.process.pid) {
+        if (process.platform !== 'win32' && entry.process?.pid) {
           process.kill(-entry.process.pid, 'SIGKILL')
         } else {
-          entry.process.kill('SIGKILL')
+          entry.process?.kill('SIGKILL')
         }
       } catch {
         // ignore
       }
       this.running.delete(id)
     }
+  }
+
+  private emitLocal(entry: RunningTask, stream: 'stdout' | 'stderr', data: string): void {
+    const chunk: LogChunk = { taskId: entry.task.id, stream, data, timestamp: Date.now() }
+    entry.sender('runner:log', chunk)
+    appendFileSync(entry.logPath, data)
   }
 
   private ensureLogPath(taskId: string): string {
@@ -212,6 +378,13 @@ class RunnerService {
       .run(task)
   }
 
+  /** 首次启动 / 自动重启时把运行状态写回 task_history */
+  private updateRunningRow(task: TaskHistory): void {
+    getDb()
+      .prepare(`UPDATE task_history SET status = 'running', pid = ?, started_at = ?, exit_code = NULL, ended_at = NULL WHERE id = ?`)
+      .run(task.pid, task.started_at, task.id)
+  }
+
   private updateTaskStatus(task: Partial<TaskHistory> & { id: string }): void {
     getDb()
       .prepare(
@@ -223,7 +396,7 @@ class RunnerService {
 
 export const runnerService = new RunnerService()
 
-export function getMainWindowSender(): ((channel: string, payload: unknown) => void) | null {
+export function getMainWindowSender(): Sender | null {
   const wins = BrowserWindow.getAllWindows()
   if (wins.length === 0) return null
   const win = wins[0]

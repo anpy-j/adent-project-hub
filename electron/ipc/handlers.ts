@@ -8,14 +8,40 @@ import { runnerService, getMainWindowSender } from '../services/runner.service'
 import { serviceManager } from '../services/service-manager.service'
 
 import { gitSummary, readRemotes, detectPlatformOf, toWebUrl, gitLog, gitInit, gitSetRemote, gitCommitAll, gitCommitFiles, gitPushUpstream, gitPullSafe, gitPushSimple, gitBranches, gitCheckout } from '../services/git.service'
-import type { ProjectRemote, ServiceCandidate, AiConfig } from '../../src/types'
+import type { Project, ProjectRemote, ServiceCandidate, AiConfig } from '../../src/types'
 import { aiService } from '../services/ai.service'
 import { getDb } from '../db'
 
-function syncProgress(projectId: string): void {
+const STAGE_RANK: Record<string, number> = { planning: 0, developing: 1, testing: 2, released: 3 }
+
+function syncProgress(projectId: string): { percent: number; stage: string; stageChanged: boolean } {
   const tasks = taskRepo.listByProject(projectId)
-  const percent = tasks.length === 0 ? 100 : Math.round((tasks.filter((t) => t.done).length / tasks.length) * 100)
-  projectRepo.update(projectId, { progress_percent: percent })
+  const done = tasks.filter((t) => t.done).length
+  const percent = tasks.length === 0 ? 100 : Math.round((done / tasks.length) * 100)
+  const project = projectRepo.get(projectId)
+  const prevStage = project?.progress_stage || 'planning'
+  let stage: Project['progress_stage'] = prevStage
+  // 阶段自动联动：按任务完成度只向前推进，绝不降级，也绝不覆盖「已发布」
+  if (prevStage !== 'released') {
+    let auto: Project['progress_stage']
+    if (tasks.length === 0 || done === 0) auto = 'planning'
+    else if (done < tasks.length) auto = 'developing'
+    else auto = 'testing'
+    if ((STAGE_RANK[auto] ?? 0) > (STAGE_RANK[prevStage] ?? 0)) stage = auto
+  }
+  projectRepo.update(projectId, { progress_percent: percent, progress_stage: stage })
+  return { percent, stage, stageChanged: stage !== prevStage }
+}
+
+function getAutoRestart(projectId: string): boolean {
+  try {
+    const row = getDb()
+      .prepare('SELECT auto_restart FROM project_config WHERE project_id = ?')
+      .get(projectId) as { auto_restart: number | null } | undefined
+    return !!row?.auto_restart
+  } catch {
+    return false
+  }
 }
 
 function getCustomCommands(projectId: string): string[] {
@@ -181,11 +207,11 @@ export function registerIpcHandlers(): void {
   })
   // ---- 任务（驱动开发进度） ----
   ipcMain.handle('task:list', (_e, projectId: string) => taskRepo.listByProject(projectId))
-  ipcMain.handle('task:add', (_e, projectId: string, title: string, tag: string) => {
+  ipcMain.handle('task:add', (_e, projectId: string, title: string, tag: string, groupName?: string | null) => {
     const project = projectRepo.get(projectId)
     if (!project) throw new Error('项目不存在')
     if (!title?.trim()) throw new Error('请填写任务标题')
-    const task = taskRepo.add(projectId, title.trim(), tag || 'chore')
+    taskRepo.add(projectId, title.trim(), tag || 'chore', groupName)
     syncProgress(projectId)
     return taskRepo.listByProject(projectId)
   })
@@ -194,11 +220,34 @@ export function registerIpcHandlers(): void {
     if (t) syncProgress(t.project_id)
     return t
   })
+  ipcMain.handle('task:update', (_e, taskId: string, data: { title?: string; tag?: string; group_name?: string | null }) => {
+    const before = taskRepo.get(taskId)
+    const t = taskRepo.update(taskId, data)
+    if (before && t && before.done !== t.done) syncProgress(t.project_id)
+    return t
+  })
+  ipcMain.handle('task:reorder', (_e, projectId: string, orderedIds: string[]) => {
+    const project = projectRepo.get(projectId)
+    if (!project) throw new Error('项目不存在')
+    const valid = new Set(taskRepo.listByProject(projectId).map((t) => t.id))
+    taskRepo.reorder(orderedIds.filter((id) => valid.has(id)))
+    return taskRepo.listByProject(projectId)
+  })
   ipcMain.handle('task:remove', (_e, taskId: string) => {
     const row = getDb().prepare('SELECT project_id FROM task WHERE id = ?').get(taskId) as { project_id: string } | undefined
     taskRepo.remove(taskId)
     if (row) syncProgress(row.project_id)
     return true
+  })
+  ipcMain.handle('project:autoRestart:get', (_e, projectId: string) => getAutoRestart(projectId))
+  ipcMain.handle('project:autoRestart:set', (_e, projectId: string, enabled: boolean) => {
+    getDb()
+      .prepare(
+        `INSERT INTO project_config (project_id, auto_restart) VALUES (@id, @v)
+         ON CONFLICT(project_id) DO UPDATE SET auto_restart = excluded.auto_restart`
+      )
+      .run({ id: projectId, v: enabled ? 1 : 0 })
+    return getAutoRestart(projectId)
   })
   ipcMain.handle('git:log', (_e, id: string, count?: number) => {
     const project = projectRepo.get(id)
@@ -218,6 +267,7 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle('runner:stop', (_e, taskId: string) => runnerService.stop(taskId))
   ipcMain.handle('runner:listRunning', () => runnerService.listRunning())
+  ipcMain.handle('runner:stats', () => runnerService.stats())
   ipcMain.handle('runner:probeExternal', (_e, projectId: string) => {
     const project = projectRepo.get(projectId)
     if (!project) throw new Error('项目不存在')
