@@ -139,19 +139,56 @@ export const projectRepo = {
 export const taskRepo = {
   listByProject(projectId: string): TaskItem[] {
     return getDb()
-      .prepare('SELECT * FROM task WHERE project_id = ? ORDER BY done ASC, created_at DESC')
+      .prepare('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order ASC, created_at DESC')
       .all(projectId) as TaskItem[]
   },
-  add(projectId: string, title: string, tag: string): TaskItem {
+  add(projectId: string, title: string, tag: string, groupName?: string | null): TaskItem {
     const db = getDb()
-    db.prepare('INSERT INTO task (id, project_id, title, tag) VALUES (?, ?, ?, ?)').run(
-      uuid(), projectId, title, tag
-    )
-    return this.listByProject(projectId)[0]
+    const minRow = db
+      .prepare('SELECT MIN(sort_order) as m FROM task WHERE project_id = ?')
+      .get(projectId) as { m: number | null }
+    const sortOrder = (minRow?.m ?? 0) - 1
+    const id = uuid()
+    db.prepare(
+      'INSERT INTO task (id, project_id, title, tag, sort_order, group_name) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, projectId, title, tag, sortOrder, groupName?.trim() || null)
+    return this.get(id) as TaskItem
+  },
+  get(id: string): TaskItem | null {
+    return (getDb().prepare('SELECT * FROM task WHERE id = ?').get(id) as TaskItem | undefined) ?? null
   },
   toggle(id: string): TaskItem | null {
     getDb().prepare('UPDATE task SET done = 1 - done WHERE id = ?').run(id)
-    return (getDb().prepare('SELECT * FROM task WHERE id = ?').get(id) as TaskItem | undefined) ?? null
+    return this.get(id)
+  },
+  update(id: string, data: { title?: string; tag?: string; group_name?: string | null }): TaskItem | null {
+    const sets: string[] = []
+    const values: Record<string, unknown> = { id }
+    if (typeof data.title === 'string' && data.title.trim()) {
+      sets.push('title = @title')
+      values.title = data.title.trim()
+    }
+    if (typeof data.tag === 'string' && data.tag.trim()) {
+      sets.push('tag = @tag')
+      values.tag = data.tag.trim()
+    }
+    if ('group_name' in data) {
+      sets.push('group_name = @group_name')
+      const g = data.group_name
+      values.group_name = typeof g === 'string' && g.trim() ? g.trim() : null
+    }
+    if (sets.length) {
+      getDb().prepare(`UPDATE task SET ${sets.join(', ')} WHERE id = @id`).run(values)
+    }
+    return this.get(id)
+  },
+  reorder(orderedIds: string[]): void {
+    const db = getDb()
+    const tx = db.transaction(() => {
+      const upd = db.prepare('UPDATE task SET sort_order = ? WHERE id = ?')
+      orderedIds.forEach((id, index) => upd.run(index, id))
+    })
+    tx()
   },
   remove(id: string): void {
     getDb().prepare('DELETE FROM task WHERE id = ?').run(id)
