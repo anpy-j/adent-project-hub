@@ -156,6 +156,22 @@ function platformLabel(p: Project): string {
   return r === 'github' ? 'GitHub' : r === 'gitee' ? 'Gitee' : r === 'gitlab' ? 'GitLab' : r ? 'Git' : '仅本地'
 }
 
+/** 英文项目名：优先取远程仓库名，其次目录名；与项目名相同则不再重复展示 */
+function englishName(p: Project): string {
+  const url = (p.remotes || [])[0]?.url || ''
+  let en = ''
+  const ssh = url.match(/^git@[^:]+:.+?\/([^/]+?)(\.git)?$/)
+  const http = url.match(/\/([^/]+?)(\.git)?$/)
+  if (ssh) en = ssh[1]
+  else if (http) en = http[1]
+  if (!en) {
+    const segs = p.path.split('/').filter(Boolean)
+    en = segs[segs.length - 1] || ''
+  }
+  if (!en || en.toLowerCase() === p.name.toLowerCase()) return ''
+  return en
+}
+
 function timeAgo(iso: string | null): string {
   if (!iso) return '-'
   const t = iso.includes('T') ? new Date(iso).getTime() : new Date(iso.replace(' ', 'T') + 'Z').getTime()
@@ -378,6 +394,7 @@ onHotkey('new-project', openAdd)
                 <div class="cell-project">
                   <div class="proj-name">
                     <span class="proj-title">{{ row.name }}</span>
+                    <span v-if="englishName(row as Project)" class="proj-en">({{ englishName(row as Project) }})</span>
                     <el-tag size="small" :style="{ backgroundColor: typeColor[row.type], color: '#fff', border: 'none' }">
                       {{ typeLabel[row.type] }}
                     </el-tag>
@@ -475,7 +492,10 @@ onHotkey('new-project', openAdd)
             @click="router.push(`/projects/${p.id}`)"
           >
             <div class="card-head">
-              <div class="name">{{ p.name }}</div>
+              <div class="name">
+                {{ p.name }}
+                <span v-if="englishName(p)" class="proj-en">({{ englishName(p) }})</span>
+              </div>
               <el-tag
                 size="small"
                 :style="{ backgroundColor: typeColor[p.type], color: '#fff', border: 'none' }"
@@ -678,6 +698,15 @@ onHotkey('new-project', openAdd)
   color: var(--el-text-color-primary);
   flex-wrap: wrap;
 }
+.proj-title {
+  white-space: nowrap;
+}
+.proj-en {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
 .proj-path {
   font-size: 12px;
   color: var(--el-text-color-secondary);
@@ -755,6 +784,11 @@ onHotkey('new-project', openAdd)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.name .proj-en {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
 }
 .path {
   display: flex;
