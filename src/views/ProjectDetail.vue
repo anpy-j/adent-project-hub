@@ -24,6 +24,8 @@ const progress = ref<{ percent: number; stage: Project['progress_stage']; note: 
   note: ''
 })
 const editForm = ref({ name: '', description: '' })
+const displayNameInput = ref('')
+const savingName = ref(false)
 const linkForm = ref({ name: 'origin', url: '' })
 
 const branches = ref<GitBranch[]>([])
@@ -165,6 +167,7 @@ async function load() {
       note: detail.progress_note || ''
     }
     editForm.value = { name: detail.name, description: detail.description || '' }
+    displayNameInput.value = detail.display_name || ''
   } catch (e) {
     ElMessage.error(`加载失败: ${(e as Error).message}`)
   } finally {
@@ -531,6 +534,39 @@ async function saveBasic() {
 
 const nameEditing = ref(false)
 
+async function saveDisplayName() {
+  if (!project.value) return
+  savingName.value = true
+  try {
+    const v = displayNameInput.value.trim()
+    await window.api.project.update(project.value.id, { display_name: v || null })
+    project.value.display_name = v || null
+    ElMessage.success('名称已保存，列表默认显示该名称')
+  } catch (e) {
+    ElMessage.error(`保存失败: ${(e as Error).message}`)
+  } finally {
+    savingName.value = false
+  }
+}
+
+/* 展示名与英文括号名（与项目列表一致） */
+function displayNameOf(p: Project): string {
+  return p.display_name || p.name
+}
+
+function englishNameOf(p: Project): string {
+  const segs = p.path.split('/').filter(Boolean)
+  let en = segs[segs.length - 1] || ''
+  if (!en) {
+    const url = (p.remotes || [])[0]?.url || ''
+    const m = url.match(/\/([^/]+?)(\.git)?$/)
+    if (m) en = m[1]
+  }
+  const shown = displayNameOf(p)
+  if (!en || en.toLowerCase() === shown.toLowerCase()) return ''
+  return en
+}
+
 async function saveName() {
   if (!project.value) return
   const name = editForm.value.name.trim()
@@ -658,8 +694,8 @@ onMounted(() => {
             <el-input v-model="editForm.name" size="default" style="width: 240px" @keyup.enter="saveName" @blur="saveName" />
           </template>
           <template v-else>
-            <h2 class="name" title="点击重命名" @click="nameEditing = true">
-              {{ project.name }}<el-icon class="edit-icon"><Edit /></el-icon>
+            <h2 class="name" title="点击修改原名称（英文）" @click="nameEditing = true">
+              {{ displayNameOf(project) }}<span v-if="englishNameOf(project)" class="name-en">({{ englishNameOf(project) }})</span><el-icon class="edit-icon"><Edit /></el-icon>
             </h2>
           </template>
           <el-tag size="small">{{ typeLabel[project.type] || project.type }}</el-tag>
@@ -677,6 +713,19 @@ onMounted(() => {
             <span v-if="git.lastCommit" class="mono dim">{{ git.lastCommit.hash }} {{ git.lastCommit.message }}</span>
           </template>
           <el-tag v-else size="small" type="info">未检测到 git 仓库</el-tag>
+        </div>
+        <div class="name-row">
+          <el-input
+            v-model="displayNameInput"
+            size="small"
+            style="width: 220px"
+            placeholder="中文名称（列表默认显示）"
+            clearable
+            @keyup.enter="saveDisplayName"
+          >
+            <template #prefix><el-icon><EditPen /></el-icon></template>
+          </el-input>
+          <el-button size="small" type="primary" plain :loading="savingName" @click="saveDisplayName">保存名称</el-button>
         </div>
         <div class="desc-row">
           <el-input
@@ -983,6 +1032,8 @@ onMounted(() => {
 .head-card { margin-bottom: 16px; }
 .head-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .name { margin: 0; display: inline-flex; align-items: center; gap: 4px; cursor: text; }
+.name-en { font-size: 13px; font-weight: 400; color: var(--el-text-color-secondary); }
+.name-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .edit-icon { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 6px; }
 .meta-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
 .sep { color: var(--el-border-color); }

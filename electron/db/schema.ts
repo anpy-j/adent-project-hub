@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS project (
   id            TEXT PRIMARY KEY,
   workspace_id  TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
   name          TEXT NOT NULL,
+  display_name  TEXT,
   path          TEXT NOT NULL,
   type          TEXT NOT NULL,
   framework     TEXT,

@@ -93,9 +93,9 @@ function ensureEntry(taskId: string, projectId = '', projectName = '', command =
 }
 
 function attach(taskId: string, project: Project, command = ''): void {
-  const entry = ensureEntry(taskId, project.id, project.name, command)
+  const entry = ensureEntry(taskId, project.id, project.display_name || project.name, command)
   entry.projectId = project.id
-  entry.projectName = project.name
+  entry.projectName = project.display_name || project.name
   if (command) entry.command = command
   entry.status = 'running'
   entry.lines = []

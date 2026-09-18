@@ -25,6 +25,7 @@ const MIGRATIONS: string[] = [
   "ALTER TABLE project ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE task ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE task ADD COLUMN group_name TEXT",
+  "ALTER TABLE project ADD COLUMN display_name TEXT",
   "ALTER TABLE project_config ADD COLUMN auto_restart INTEGER NOT NULL DEFAULT 0"
 ]
 

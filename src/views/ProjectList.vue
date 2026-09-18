@@ -57,7 +57,7 @@ const baseRows = computed(() => {
     )
   })
   const sorted = [...rows]
-  if (sortBy.value === 'name') sorted.sort((a, b) => a.name.localeCompare(b.name))
+  if (sortBy.value === 'name') sorted.sort((a, b) => displayName(a).localeCompare(displayName(b)))
   else if (sortBy.value === 'progress')
     sorted.sort((a, b) => (b.progress_percent || 0) - (a.progress_percent || 0))
   else
@@ -156,7 +156,12 @@ function platformLabel(p: Project): string {
   return r === 'github' ? 'GitHub' : r === 'gitee' ? 'Gitee' : r === 'gitlab' ? 'GitLab' : r ? 'Git' : '仅本地'
 }
 
-/** 英文项目名：优先取目录名，其次远程仓库名；与项目名相同则不再重复展示 */
+/** 列表主标题：优先显示中文名称，未设置时用原名称 */
+function displayName(p: Project): string {
+  return p.display_name || p.name
+}
+
+/** 英文项目名：优先取目录名，其次远程仓库名；与展示名相同则不再重复展示 */
 function englishName(p: Project): string {
   const segs = p.path.split('/').filter(Boolean)
   let en = segs[segs.length - 1] || ''
@@ -165,7 +170,8 @@ function englishName(p: Project): string {
     const m = url.match(/\/([^/]+?)(\.git)?$/)
     if (m) en = m[1]
   }
-  if (!en || en.toLowerCase() === p.name.toLowerCase()) return ''
+  const shown = displayName(p)
+  if (!en || en.toLowerCase() === shown.toLowerCase()) return ''
   return en
 }
 
@@ -390,7 +396,7 @@ onHotkey('new-project', openAdd)
               <template #default="{ row }">
                 <div class="cell-project">
                   <div class="proj-name">
-                    <span class="proj-title">{{ row.name }}</span>
+                    <span class="proj-title">{{ displayName(row as Project) }}</span>
                     <span v-if="englishName(row as Project)" class="proj-en">({{ englishName(row as Project) }})</span>
                     <el-tag size="small" :style="{ backgroundColor: typeColor[row.type], color: '#fff', border: 'none' }">
                       {{ typeLabel[row.type] }}
@@ -490,7 +496,7 @@ onHotkey('new-project', openAdd)
           >
             <div class="card-head">
               <div class="name">
-                {{ p.name }}
+                {{ displayName(p) }}
                 <span v-if="englishName(p)" class="proj-en">({{ englishName(p) }})</span>
               </div>
               <el-tag

@@ -49,6 +49,7 @@ function withDefaults(row: Project | undefined): Project | null {
   if (!row) return null
   return {
     ...row,
+    display_name: row.display_name ?? null,
     progress_percent: row.progress_percent ?? 0,
     progress_stage: row.progress_stage ?? 'planning',
     progress_note: row.progress_note ?? '',
@@ -66,6 +67,7 @@ export const projectRepo = {
     ) as Project[]
     return rows.map((r) => ({
       ...r,
+      display_name: r.display_name ?? null,
       progress_percent: r.progress_percent ?? 0,
       progress_stage: r.progress_stage ?? 'planning',
       progress_note: r.progress_note ?? '',
@@ -112,7 +114,7 @@ export const projectRepo = {
   update(id: string, data: Partial<Project>): Project {
     const db = getDb()
     const allowed: (keyof Project)[] = [
-      'name', 'path', 'type', 'framework', 'runtime_id',
+      'name', 'display_name', 'path', 'type', 'framework', 'runtime_id',
       'tags', 'description', 'last_run_at',
       'progress_percent', 'progress_stage', 'progress_note'
     ]
@@ -123,6 +125,7 @@ export const projectRepo = {
         sets.push(`${key} = @${key}`)
         let v: unknown = data[key]
         if (key === 'tags' && Array.isArray(v)) v = JSON.stringify(v)
+        if (key === 'display_name' && typeof v === 'string' && !v.trim()) v = null
         values[key] = v
       }
     }

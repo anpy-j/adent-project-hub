@@ -90,6 +90,7 @@ export interface Project {
   id: string
   workspace_id: string
   name: string
+  display_name: string | null
   path: string
   type: ProjectType
   framework: string | null
